@@ -583,6 +583,7 @@ function createProgram(version: string, telemetry: Telemetry): Command {
     .addOption(new Option('--artifacts <dir>').hideHelp().argParser(removedArtifactsFlag))
     .option('--debug', 'print phase timings and the agent step table to stderr')
     .option('--ai-trace', 'record every model call to <output>/ai-trace.json (unbox-ai)')
+    .option('--codegen', "write the agent steps of passing tests as each target engine's own test code under <output>/codegen")
     .option('--trace [mode]', `which attempts keep a trace page (<output>/results/<test>/trace.md): ${RECORDING_MODES.join(', ')} (bare: on), over the config and every target`, parseRecordingMode('--trace'))
     .option('--video [mode]', `which attempts record a video: ${RECORDING_MODES.join(', ')} (bare: on), over the config and every target`, parseRecordingMode('--video'))
     .addHelpText(
@@ -608,6 +609,7 @@ function createProgram(version: string, telemetry: Telemetry): Command {
           'e2e run --update-snapshots tests/home.e2e.ts',
           'e2e run --agent ux tests/onboarding.e2e.ts',
           'e2e run --agent buyer,admin tests/checkout.e2e.ts',
+          'e2e run --codegen tests/checkout.e2e.ts',
           'AI_GATEWAY_API_KEY=... e2e run --no-cache',
         ]),
         '',
@@ -640,6 +642,7 @@ function createProgram(version: string, telemetry: Telemetry): Command {
           watch?: boolean;
           debug?: boolean;
           aiTrace?: boolean;
+          codegen?: boolean;
           trace?: RecordingMode | true;
           video?: RecordingMode | true;
         },
@@ -666,6 +669,7 @@ function createProgram(version: string, telemetry: Telemetry): Command {
           updateSnapshots: options.updateSnapshots,
           debug: options.debug,
           aiTrace: options.aiTrace,
+          codegen: options.codegen,
           trace: recordingOption(options.trace),
           video: recordingOption(options.video),
         };

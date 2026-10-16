@@ -32,6 +32,7 @@ import { keeps, type AttemptRecordings, type VideoRecording } from '../internal/
 import type { ArtifactStore, Secret } from '../types.ts';
 import { attemptSegments, createAttemptArtifacts, resultSegment } from './artifacts.ts';
 import { AttemptBudget } from './budget.ts';
+import { CodegenLog, type CodegenAttempt } from './codegen.ts';
 import { createEngineSession } from '../engine/session.ts';
 import { createExtendedFixtures } from './extended-fixtures.ts';
 import { captureFailureEvidence } from './failure-evidence.ts';
@@ -64,7 +65,8 @@ import { WorkerModels } from './worker-models.ts';
 import type { SetupFn } from '../types.ts';
 
 export interface ExecutionEvents {
-  onResult?(result: ResultRecord): void;
+  /** One final result; `codegen` carries its last attempt's recordings when the run asked for code. */
+  onResult?(result: ResultRecord, codegen?: CodegenAttempt): void;
   onSerialGroup?(group: SerialGroupRecord): void;
   /** An attempt of an ordinary or setup pair begins, its realm and `beforeAll` hooks included. */
   onAttemptStart?(pair: TestTargetPair, attemptIndex: number): void;
@@ -197,6 +199,8 @@ export class TargetExecutor implements SerialHost {
   private engineReady: Promise<void> | undefined;
   /** The stored screenshots the run wrote, so no comparison passes against one nobody reviewed. */
   private readonly writtenScreenshots: WrittenScreenshots;
+  /** `--codegen` recordings of the attempts whose result is not out yet, by attempt id. */
+  private readonly codegenLogs = new Map<string, CodegenLog>();
 
   constructor(private readonly options: TargetExecutorOptions) {
     this.target = options.target;
@@ -225,9 +229,19 @@ export class TargetExecutor implements SerialHost {
     return this.options.config;
   }
 
-  /** Emits one final result record (SerialHost). Records are not retained. */
+  /**
+   * Emits one final result record (SerialHost). Records are not retained;
+   * neither are the `--codegen` recordings of its attempts, of which only the
+   * last attempt's travel with it.
+   */
   emit(result: ResultRecord): void {
-    this.options.events?.onResult?.(result);
+    const last = result.attempts.at(-1);
+    let codegen: CodegenAttempt | undefined;
+    for (const attempt of result.attempts) {
+      if (attempt === last) codegen = this.codegenLogs.get(attempt.id)?.snapshot();
+      this.codegenLogs.delete(attempt.id);
+    }
+    this.options.events?.onResult?.(result, codegen);
   }
 
   /** Announces one pair about to execute (SerialHost). */
@@ -956,6 +970,11 @@ export class TargetExecutor implements SerialHost {
             recordings: this.storedRecordings,
           })
         : undefined;
+    // A serial member's steps live on its group, which `--codegen` leaves out,
+    // and a test registered in memory has no file to write code beside.
+    const codegen =
+      this.config.codegen === true && inMemory === undefined && shared === undefined ? new CodegenLog(attemptId) : undefined;
+    if (codegen !== undefined) this.codegenLogs.set(attemptId, codegen);
 
     // A rejection nobody caught, handed in by the process while this attempt
     // is in flight. Set while the body's race is pending, so the rejection
@@ -1026,6 +1045,7 @@ export class TargetExecutor implements SerialHost {
         agent: pair.agent,
         saveSession,
         ...(cache === undefined ? {} : { cache }),
+        ...(codegen === undefined ? {} : { codegen }),
         debug: this.debug,
         models: this.models,
         test: { file: pair.test.file, titlePath: pair.test.titlePath, writtenScreenshots: this.writtenScreenshots },

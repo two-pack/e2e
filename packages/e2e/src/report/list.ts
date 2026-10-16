@@ -1124,6 +1124,13 @@ export class ListReporter implements Reporter {
       const shown = this.displayPath(event.aiTracePath);
       this.print(padTitle(pc, 'AI trace') + `${shown} ${pc.dim(`(open with: npx unbox-ai ${shown})`)}`);
     }
+    if (event.codegen !== undefined) {
+      const files = event.codegen.files;
+      this.print(
+        padTitle(pc, 'Code') +
+          `${this.displayPath(event.codegen.dir)} ${pc.dim(`(${String(files)} ${files === 1 ? 'file' : 'files'})`)}`,
+      );
+    }
     this.print('');
   }
 }

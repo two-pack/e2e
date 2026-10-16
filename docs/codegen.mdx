@@ -1,0 +1,133 @@
+---
+title: Export to Playwright
+description: Turn what the agent did in a passing run into a Playwright Test file you can run without a model.
+---
+
+`e2e run --codegen` writes the agent steps of every passing test as
+Playwright code. Each `agent.act` call becomes the clicks, fills, and key
+presses the agent made in that run, addressed by role and accessible name or
+test id. Use it to see what a step did, to seed a plain Playwright
+suite, or to keep a hot path running without model calls.
+
+<CodeGroup>
+```bash npm
+npx e2e run --codegen tests/checkout.e2e.ts
+```
+
+```bash pnpm
+pnpm exec e2e run --codegen tests/checkout.e2e.ts
+```
+
+```bash bun
+bunx e2e run --codegen tests/checkout.e2e.ts
+```
+</CodeGroup>
+
+The run writes one file per test file and target under
+`.e2e/codegen/<target>/`, at the test file's own path with `.spec.ts` in place
+of `.e2e.ts`, and prints where:
+
+```text
+     Report  .e2e/report.json
+       Code  .e2e/codegen (1 file)
+```
+
+A run with `--codegen` replaces the whole directory. It follows `--output`
+like the report does.
+
+## What you get
+
+For this test:
+
+```ts title="tests/checkout.e2e.ts"
+import { test } from '@e2e-dev/web';
+import { credentials } from 'e2e';
+
+test('signs in and buys a hat', async ({ app, agent }) => {
+  const admin = credentials.user('admin');
+  await app.open('/login');
+  await agent.act('sign in', { params: { username: admin.username, password: admin.password } });
+  await agent.act('add the blue hat to the cart and check out');
+  await agent.assert('the order confirmation is shown');
+});
+```
+
+the web engine writes:
+
+```ts title=".e2e/codegen/web/tests/checkout.spec.ts"
+import { test } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
+
+test.use({ baseURL: process.env["BASE_URL"] ?? "http://localhost:3000/" });
+
+function secret(variable: string): string { /* reads process.env[variable] */ }
+function within(page: Page, key: string): Locator { /* the row or list item holding key */ }
+
+test("signs in and buys a hat", async ({ page }) => {
+  // app.open (tests/checkout.e2e.ts:7)
+  await page.goto("/login");
+
+  // agent.act: sign in (tests/checkout.e2e.ts:8)
+  await page.getByRole("textbox", { name: "Username", exact: true }).fill("admin");
+  await page.getByRole("textbox", { name: "Password", exact: true }).fill(secret("E2E_USER_ADMIN_PASSWORD"));
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+  // agent.act: add the blue hat to the cart and check out (tests/checkout.e2e.ts:9)
+  await within(page, "Blue hat").getByRole("button", { name: "Add to cart", exact: true }).click();
+  await page.getByRole("link", { name: "Cart", exact: true }).click();
+  await page.getByRole("button", { name: "Check out", exact: true }).click();
+
+  // agent.assert: the order confirmation is shown (tests/checkout.e2e.ts:10)
+  // TODO: agent.assert was a model judgment; write it as an expect() on what it checked
+});
+```
+
+Run it with Playwright Test like any other spec. Set `BASE_URL` when the app
+is not at the URL the e2e target used.
+
+- A node is found by test id first, then role and accessible name, then
+  placeholder, the structural selector, and text. A node that sat in a row,
+  list item, group, or dialog is scoped to it by `within()`, and one of
+  several identical controls gets `.nth()`. The web engine's
+  [`testIdAttribute`](/browser) is set with `selectors.setTestIdAttribute`.
+- A secret fill reads the variable that overrides the secret in the e2e
+  config: `E2E_USER_<CREDENTIAL>_PASSWORD` for a credential's password,
+  `E2E_SECRET_<NAME>` for anything in `secrets`. The value never reaches the
+  file.
+- `app.open` becomes `page.goto`. When the first `agent.act` started on a page
+  nothing in the test opened, the file opens that page first.
+
+## What stays a TODO
+
+The file keeps every step of the test in order. Steps with no actions to
+replay are comments where they ran:
+
+- `agent.assert`, `agent.waitFor`, and `agent.extract` were model judgments.
+  Write each as an `expect()` on what it checked.
+- Steps the test code ran itself, a `screen` locator or an `expect`, are named
+  with their label and line. Port them by hand; they were already
+  deterministic.
+- A project tool the agent called, or a value it typed that it read off the
+  screen in that run, is a `TODO` inside the step.
+
+A step whose recording could not be kept whole (a value that held a secret,
+more than 50 actions, a node with nothing durable to find it by) carries a
+`NOTE` above its calls.
+
+Only passing tests are written. A failed, skipped, or interrupted test, a
+member of a `test.describe.serial` group, and an [`e2e explore`](/explore)
+run write nothing.
+
+## The code is a snapshot
+
+The agent adapts to the screen on every run; the file does not. It is what
+the agent did once, in the run that wrote it, against the data that run saw.
+Read it before you commit it, and re-run with `--codegen` after the app
+changes. A step replayed from the [replay cache](/cache) writes the same code
+as the run that recorded it, so `--codegen` costs no model calls on a warm
+cache.
+
+Only the web engine writes code. Any other target gets a notice
+(`--codegen wrote no code for target "ios": engine "mobile" declares no codegen`).
+An engine author adds it with the [`codegen`](/reference/engine#code-generation)
+member.

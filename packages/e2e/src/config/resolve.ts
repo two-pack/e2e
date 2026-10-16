@@ -90,6 +90,8 @@ export interface ResolvedConfig {
   readonly cache: ResolvedCacheConfig;
   /** `--update-snapshots`: `toHaveScreenshot` rewrites a stored screenshot that differs. */
   readonly updateSnapshots: boolean;
+  /** True when `--codegen` asked attempts to record their agent steps' actions (`run/codegen.ts`). */
+  readonly codegen?: boolean;
   readonly limits: ResolvedLimits;
   readonly credentials: ReadonlyMap<string, ResolvedCredential>;
   /** The `config.secrets` entries by name: what `secrets.get()` and an engine option take. */
@@ -152,6 +154,8 @@ export interface CliOverrides {
   video?: RecordingMode;
   /** `--agent`: the configured agents unpinned tests run as, instead of `default` alone. */
   agents?: readonly string[];
+  /** `--codegen`: record every `agent.act` step's actions for the engines to write out as code. */
+  codegen?: boolean;
 }
 
 const TOP_LEVEL_KEYS = new Set([
@@ -321,6 +325,7 @@ export function resolveConfig(
     agents,
     cache,
     updateSnapshots: cli.updateSnapshots === true,
+    ...(cli.codegen === true ? { codegen: true } : {}),
     limits,
     credentials,
     secrets,

@@ -36,6 +36,7 @@ import { authorizeSecretFill } from './secrets.ts';
 import { SETTLE_AFTER } from './settle-policy.ts';
 import type { StepAccounting } from './step-accounting.ts';
 import type { StepTraceSession } from './step-cache.ts';
+import type { CodegenStepRecorder } from '../run/codegen.ts';
 import { authorizeUploadPaths } from './upload-paths.ts';
 
 /**
@@ -109,6 +110,8 @@ export interface ActionDispatcherOptions {
   readonly secrets: ReadonlyMap<string, Secret>;
   /** The step's trace-cache session, read at commit time; undefined when caching is off. */
   readonly trace: () => StepTraceSession | undefined;
+  /** The step's `--codegen` recording; undefined unless the run asked for code. */
+  readonly codegen?: CodegenStepRecorder | undefined;
 }
 
 export class ActionDispatcher {
@@ -271,6 +274,7 @@ export class ActionDispatcher {
       if (call.mutates) {
         this.accounting.reserveAction();
         this.options.trace()?.recordGap(call.name);
+        this.options.codegen?.recordGap(call.name);
       }
       const value = await instrumentPhase(
         this.runtime,
@@ -568,6 +572,9 @@ export class ActionDispatcher {
 
   private async runActionNow(name: GrammarActionName, body: () => Promise<RecordableAction>): Promise<void> {
     this.accounting.reserveAction();
+    // The screen the action addresses, read before it runs: where a script
+    // written from the recording has to be for the action to land.
+    const location = this.feed.latest?.location;
     const redaction = { redact: this.runtime.redact, redactCut: this.runtime.redactCut };
     let action: RecordableAction;
     try {
@@ -583,7 +590,8 @@ export class ActionDispatcher {
     }
     this.armAfter(action.name);
     const trace = this.options.trace();
-    if (trace === undefined) return;
+    const codegen = this.options.codegen;
+    if (trace === undefined && codegen === undefined) return;
     // A typed value the step read off the screen (its tree, or a screenshot
     // it was shown) or reckoned from the date is this run's data, not the
     // flow's: it is recorded as a gap so replay hands over before it rather
@@ -596,11 +604,13 @@ export class ActionDispatcher {
         pixels: this.feed.pixelsShown,
       });
       if (derived !== undefined) {
-        trace.recordDerivedGap(derived);
+        trace?.recordDerivedGap(derived);
+        codegen?.recordDerivedGap(derived);
         return;
       }
     }
-    trace.record(action);
+    trace?.record(action);
+    codegen?.record(action, location);
   }
 
   /**

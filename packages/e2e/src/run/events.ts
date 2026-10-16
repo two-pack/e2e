@@ -231,6 +231,8 @@ export type RunEventFact =
        * result id, as a path from the project root.
        */
       readonly traces?: Readonly<Record<string, string>>;
+      /** Where `--codegen` wrote the engines' code, and how many files, once they exist. */
+      readonly codegen?: { readonly dir: string; readonly files: number };
     };
 
 /** Envelope stamped by the emitter: monotonic order and wall-clock time. */

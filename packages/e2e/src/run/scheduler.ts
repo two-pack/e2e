@@ -11,6 +11,7 @@
 import type { SkipInfo, TestTargetPair } from '../collect/select.ts';
 import type { ResolvedTarget } from '../config/resolve.ts';
 import type { AiTraceSnapshot } from '../internal/ai-trace.ts';
+import type { CodegenAttempt } from './codegen.ts';
 import type { DebugSnapshot } from '../internal/debug.ts';
 import { InfrastructureError, type SerializedError, TestError, TestTimeoutError, serializeError } from '../internal/errors.ts';
 import { timestamp, uuidv7 } from '../internal/ids.ts';
@@ -44,7 +45,8 @@ import {
 } from './worker/protocol.ts';
 
 export interface SchedulerEvents {
-  onResult(result: ResultRecord): void;
+  /** One final result; `codegen` carries its last attempt's `--codegen` recordings, when a worker shipped them. */
+  onResult(result: ResultRecord, codegen?: CodegenAttempt): void;
   onSerialGroup(group: SerialGroupRecord): void;
   onRunError(error: RunError): void;
   /** A worker asks the run to stop over a run-level configuration failure. */
@@ -372,8 +374,8 @@ class Scheduler {
    * however the result came about: a worker's verdict, a synthesized crash,
    * or a skip. Reaching the limit stops the run at once.
    */
-  private report(result: ResultRecord): void {
-    this.options.events.onResult(result);
+  private report(result: ResultRecord, codegen?: CodegenAttempt): void {
+    this.options.events.onResult(result, codegen);
     if (!countsTowardFailureLimit(result.status)) return;
     this.failures += 1;
     const limit = this.options.maxFailures;
@@ -793,7 +795,7 @@ class Scheduler {
           worker.sawFailure = true;
         }
         if (result.test.kind === 'setup') this.recordSetupOutcome(state, result);
-        this.report(result);
+        this.report(result, message.codegen);
         break;
       }
       case 'serial-group': {

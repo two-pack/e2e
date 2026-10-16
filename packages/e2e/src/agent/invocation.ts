@@ -18,6 +18,7 @@ import { Deadline } from '../internal/time.ts';
 import type { LocatorEngine } from '../locator/engine.ts';
 import type { SecretResolver } from '../locator/screen.ts';
 import type { ArtifactSink } from '../run/fixtures.ts';
+import type { CodegenLog } from '../run/codegen.ts';
 import type { SecretExposure } from '../run/secrecy.ts';
 import type {
   StepEvent,
@@ -118,6 +119,8 @@ export interface AgentContext {
   readonly artifacts: ArtifactSink;
   /** The attempt's trace cache, or undefined when caching is off. */
   readonly cache?: AgentCacheContext;
+  /** The attempt's `--codegen` recording; absent unless the run asked for code. */
+  readonly codegen?: CodegenLog;
   /** `--debug` phase timings; absent when the caller collects none. */
   readonly debug?: DebugTrace;
 }
