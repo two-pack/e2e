@@ -30,6 +30,37 @@ export interface CodegenRecording {
   readonly incomplete: boolean;
 }
 
+/**
+ * One deterministic fact a judgment rested on, as it held on the screen the
+ * judgment passed on: what a script asserts in place of asking a model. The
+ * judge proposes them after its verdict; the runner keeps only the ones the
+ * same observation confirms, each node by its durable descriptor.
+ */
+export type CodegenCheck =
+  /** The node is on screen. */
+  | { readonly kind: 'visible'; readonly target: CodegenTargetDescriptor }
+  /** The node's text or accessible name contains `text`. */
+  | { readonly kind: 'text'; readonly target: CodegenTargetDescriptor; readonly text: string }
+  /** The field's current value is `value`. */
+  | { readonly kind: 'value'; readonly target: CodegenTargetDescriptor; readonly value: string }
+  | { readonly kind: 'checked'; readonly target: CodegenTargetDescriptor; readonly checked: boolean }
+  | { readonly kind: 'enabled'; readonly target: CodegenTargetDescriptor; readonly enabled: boolean }
+  /** No node on screen shows `text`. */
+  | { readonly kind: 'absent'; readonly text: string }
+  /** The surface's location, path and query on the app's own origin, else whole. */
+  | { readonly kind: 'url'; readonly location: string };
+
+/**
+ * What a judgment step (`agent.assert`, `agent.waitFor`, `agent.extract`)
+ * left for code: the checks that prove it, and for an extraction the value it
+ * returned to the test. Absent checks mean none could be derived.
+ */
+export interface CodegenJudgment {
+  readonly checks: readonly CodegenCheck[];
+  /** The value `agent.extract` returned, redacted; absent when it carried a secret. */
+  readonly value?: unknown;
+}
+
 /** One step of a passing test, in the order it ran. */
 export interface CodegenStep {
   /** The public API the step ran through: `agent.act`, `agent.assert`, a locator action, `app.open`. */
@@ -38,8 +69,12 @@ export interface CodegenStep {
   readonly label: string;
   /** The test file line the step was called from, when known. */
   readonly line?: number;
+  /** The column of that call, one-based, when known. */
+  readonly column?: number;
   /** Present for an `agent.act` step that committed at least one action. */
   readonly recording?: CodegenRecording;
+  /** Present for a judgment step that passed with `--codegen` on. */
+  readonly judgment?: CodegenJudgment;
 }
 
 /** One passing test, by title, with its steps. */
@@ -57,6 +92,10 @@ export interface CodegenFile {
   readonly target: string;
   /** The target app's base URL, when it has one. */
   readonly appUrl?: string;
+  /** The test file's source text, to convert with its control flow intact; absent when it could not be read. */
+  readonly source?: string;
+  /** The configured credentials' usernames by credential name; passwords are never handed over. */
+  readonly usernames?: Readonly<Record<string, string>>;
   readonly tests: readonly CodegenTest[];
 }
 

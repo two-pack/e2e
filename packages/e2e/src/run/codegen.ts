@@ -15,22 +15,28 @@
  * gets back; it writes it under `<output>/codegen/<target>/`.
  */
 
-import { rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { RecordableAction } from '../agent/actions.ts';
 import { TraceRecorder } from '../cache/recorder.ts';
 import type { DerivedReason } from '../cache/trace.ts';
 import type { ResolvedConfig } from '../config/resolve.ts';
-import type { CodegenFile, CodegenRecording, CodegenStep, CodegenTest } from '../engine/codegen.ts';
+import type { CodegenFile, CodegenJudgment, CodegenRecording, CodegenStep, CodegenTest } from '../engine/codegen.ts';
 import { writeTextReport } from '../report/write.ts';
 import { sanitizePathSegment } from './artifacts.ts';
 import { outputLayout } from './output.ts';
 import type { ResultRecord } from './records.ts';
 
+/** What one step left for code: an act's actions, or a judgment's checks. */
+export interface CodegenStepData {
+  readonly recording?: CodegenRecording;
+  readonly judgment?: CodegenJudgment;
+}
+
 /** One attempt's recordings, keyed by the step id the report gives the step. */
 export interface CodegenAttempt {
   readonly attemptId: string;
-  readonly steps: Readonly<Record<string, CodegenRecording>>;
+  readonly steps: Readonly<Record<string, CodegenStepData>>;
 }
 
 /** What an `agent.act` step tells its recording, mirroring the replay cache's recording calls. */
@@ -46,6 +52,7 @@ export interface CodegenStepRecorder {
 /** The recording of one attempt's `agent.act` steps. */
 export class CodegenLog {
   private readonly steps = new Map<string, { readonly recorder: TraceRecorder; startLocation: string | undefined }>();
+  private readonly judgments = new Map<string, CodegenJudgment>();
 
   constructor(readonly attemptId: string) {}
 
@@ -67,17 +74,25 @@ export class CodegenLog {
     };
   }
 
-  /** The steps that committed at least one action, by step id. */
+  /** Keeps what a passing judgment step left for code: the checks that prove it, and an extraction's value. */
+  judged(stepId: string, judgment: CodegenJudgment): void {
+    this.judgments.set(stepId, judgment);
+  }
+
+  /** The act steps that committed at least one action and the judgments that passed, by step id. */
   snapshot(): CodegenAttempt {
-    const steps: Record<string, CodegenRecording> = {};
+    const steps: Record<string, CodegenStepData> = {};
     for (const [stepId, { recorder, startLocation }] of this.steps) {
       if (recorder.recordedCount === 0) continue;
       steps[stepId] = {
-        ...(startLocation === undefined ? {} : { startLocation }),
-        actions: [...recorder.recorded],
-        incomplete: recorder.incomplete,
+        recording: {
+          ...(startLocation === undefined ? {} : { startLocation }),
+          actions: [...recorder.recorded],
+          incomplete: recorder.incomplete,
+        },
       };
     }
+    for (const [stepId, judgment] of this.judgments) steps[stepId] = { ...steps[stepId], judgment };
     return { attemptId: this.attemptId, steps };
   }
 }
@@ -113,12 +128,13 @@ export class CodegenCollector {
     if (attempt === undefined || attempt.status !== 'passed') return;
     const recorded = recordings?.attemptId === attempt.id ? recordings.steps : {};
     const steps = attempt.steps.map((step): CodegenStep => {
-      const recording = recorded[step.id];
+      const data = recorded[step.id];
       return {
         api: step.api,
         label: step.label,
-        ...(step.source === undefined ? {} : { line: step.source.line }),
-        ...(recording === undefined ? {} : { recording }),
+        ...(step.source === undefined ? {} : { line: step.source.line, column: step.source.column }),
+        ...(data?.recording === undefined ? {} : { recording: data.recording }),
+        ...(data?.judgment === undefined ? {} : { judgment: data.judgment }),
       };
     });
     this.tests.push({ result, test: { title: result.test.title, titlePath: [...result.test.titlePath], steps } });
@@ -153,10 +169,14 @@ export class CodegenCollector {
       const ordered = group.toSorted(
         (a, b) => a.result.test.declarationIndex - b.result.test.declarationIndex || a.result.repeat - b.result.repeat,
       );
+      const source = await readFile(path.join(config.projectRoot, first.result.test.file), 'utf8').catch(() => undefined);
+      const usernames = Object.fromEntries([...config.credentials.values()].map((credential) => [credential.name, credential.username]));
       const file: CodegenFile = {
         file: first.result.test.file,
         target: target.name,
         ...(target.app.base === undefined ? {} : { appUrl: target.app.base.href }),
+        ...(source === undefined ? {} : { source }),
+        ...(Object.keys(usernames).length === 0 ? {} : { usernames }),
         tests: uniqueTests(ordered),
       };
       const output = path.join(dir, sanitizePathSegment(target.name), ...outputSegments(file.file, codegen.extension));

@@ -8,6 +8,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startFixtureApp, type FixtureApp } from '../helpers/fixture-app.ts';
 import {
@@ -19,6 +20,8 @@ import {
   type RunOutcome,
 } from '../helpers/run-project.ts';
 import type { StepExecutor } from '../../src/agent/executor.ts';
+import type { ModelInstance } from '../../src/types.ts';
+import { installFakeModel, type FakeCall } from '../helpers/fake-model.ts';
 
 const SUITE = `import { test, expect } from 'e2e';
 
@@ -58,6 +61,20 @@ const EXECUTOR_MODULE = `export const tapper = {
 };
 `;
 
+/**
+ * The judge the codegen question goes to: it proposes the counter's text,
+ * which the screen bears out, and a node the screen never showed, which the
+ * runner must drop. Self-contained, so a worker's config embeds its source.
+ */
+function judge(call: FakeCall): unknown {
+  if (call.schemaName !== 'agent-codegen-checks-1') throw new Error(`unexpected ${call.schemaName}`);
+  const line = call.lines.find((candidate) => /status "Counter"/u.test(candidate)) ?? '';
+  const id = /#(\S+)/u.exec(line)?.[1] ?? null;
+  return { checks: [{ kind: 'text', node: id, text: '1' }, { kind: 'visible', node: 'n9999', text: null }] };
+}
+
+const HELPER = fileURLToPath(new URL('../helpers/fake-model.ts', import.meta.url));
+
 const SPEC = path.join('.e2e', 'codegen', 'web', 'tests', 'counter.spec.ts');
 
 describe('--codegen on the in-process transport', () => {
@@ -65,14 +82,16 @@ describe('--codegen on the in-process transport', () => {
   let outcome: RunOutcome;
   let project: FixtureProject;
   let executor: StepExecutor;
+  let model: ModelInstance;
 
   beforeAll(async () => {
     app = await startFixtureApp();
     project = createProject({ 'tests/counter.e2e.ts': SUITE, 'tapper.ts': EXECUTOR_MODULE });
     executor = ((await import(path.join(project.dir, 'tapper.ts'))) as { tapper: StepExecutor }).tapper;
+    model = installFakeModel(judge);
     outcome = await runExisting(project, {
       appUrl: app.url,
-      config: { tests: 'tests/**/*.e2e.ts', agents: { default: { executor } } },
+      config: { tests: 'tests/**/*.e2e.ts', agents: { default: { executor, model } } },
       runOptions: { codegen: true },
     });
   }, 120_000);
@@ -88,34 +107,45 @@ describe('--codegen on the in-process transport', () => {
     expect(outcome.codegenFiles).toEqual([path.join(project.dir, SPEC)]);
   });
 
-  it('turns the act into Playwright calls and keeps the other steps as TODOs, in order', () => {
+  it('converts the test source: the act becomes its actions, the assert the check the screen bore out', () => {
     const code = readFileSync(path.join(project.dir, SPEC), 'utf8');
-    expect(code).toContain('import { test } from "@playwright/test";');
+    expect(code).toContain('import { expect, test } from "@playwright/test";');
+    expect(code).not.toContain("from 'e2e'");
     expect(code).toContain(`test.use({ baseURL: process.env["BASE_URL"] ?? ${JSON.stringify(new URL(app.url).href)} });`);
-    expect(code).toContain('test.describe("counter", () => {');
-    expect(code).toContain('test("increments through the agent", async ({ page }) => {');
-    const body = code.slice(code.indexOf('increments through the agent'));
-    const order = [
-      'await page.goto("/");',
-      '// agent.act: increment the counter once (tests/counter.e2e.ts:',
-      'await page.getByRole("button", { name: "Increment", exact: true }).click();',
-      '// TODO: agent.assert was a model judgment',
-      '// TODO: expect.toHaveText ran as test code',
-    ].map((line) => body.indexOf(line));
-    expect(order.every((index) => index >= 0)).toBe(true);
-    expect(order).toEqual(order.toSorted((a, b) => a - b));
+    expect(code).toContain(
+      [
+        "test.describe('counter', () => {",
+        "  test('increments through the agent', async ({ page }) => {",
+        '    await page.goto("/");',
+        '    // agent.act: increment the counter once',
+        '    await page.getByRole("button", { name: "Increment", exact: true }).click();',
+        '    // agent.assert: the counter shows 1',
+        '    await expect(page.getByRole("status", { name: "Counter", exact: true })).toContainText("1");',
+        "    await expect(page.getByRole('status')).toHaveText('1');",
+      ].join('\n'),
+    );
+    // The proposed node the screen never showed is dropped, not written.
+    expect(code).not.toContain('toBeVisible');
   });
 
-  it('leaves a failing test out: code from a run that did not pass would freeze a broken flow', () => {
+  it('keeps a failing test, whose agent call recorded nothing, throwing where the call was', () => {
     const code = readFileSync(path.join(project.dir, SPEC), 'utf8');
-    expect(code).not.toContain('fails after the agent acted');
+    expect(code).toContain(
+      [
+        "test('fails after the agent acted', async ({ page }) => {",
+        '  await page.goto("/");',
+        '  // agent.act: increment the counter once',
+        '  // TODO: no passing run reached this call, so nothing was recorded for it.',
+        '  throw new Error("agent.act(\\"increment the counter once\\") was not recorded by e2e run --codegen");',
+      ].join('\n'),
+    );
   });
 
   it('writes the same code when the cache replays the step, and replaces the previous files', async () => {
     const before = readFileSync(path.join(project.dir, SPEC), 'utf8');
     const replayed = await runExisting(project, {
       appUrl: app.url,
-      config: { tests: 'tests/**/*.e2e.ts', agents: { default: { executor } } },
+      config: { tests: 'tests/**/*.e2e.ts', agents: { default: { executor, model } } },
       runOptions: { codegen: true, grep: [/increments through the agent/] },
     });
     expect(resultByTitle(replayed, 'increments through the agent').status).toBe('passed');
@@ -127,7 +157,7 @@ describe('--codegen on the in-process transport', () => {
   it('writes nothing without the flag', async () => {
     const plain = await runExisting(project, {
       appUrl: app.url,
-      config: { tests: 'tests/**/*.e2e.ts', agents: { default: { executor } } },
+      config: { tests: 'tests/**/*.e2e.ts', agents: { default: { executor, model } } },
       runOptions: { grep: [/increments through the agent/] },
     });
     expect(plain.codegenFiles).toBeUndefined();
@@ -145,11 +175,12 @@ describe('--codegen on child-process workers', () => {
     const configSource = `import type { E2EConfig } from 'e2e';
 import { web } from '@e2e-dev/web';
 import { tapper } from './tapper.ts';
+import { installFakeModel } from ${JSON.stringify(HELPER)};
 
 export default {
   targets: [{ name: 'web', platform: 'web', engine: web(), app: { url: process.env.APP_URL! } }],
   workers: 2,
-  agents: { default: { executor: tapper } },
+  agents: { default: { executor: tapper, model: installFakeModel(${judge.toString()}) } },
 } satisfies E2EConfig;
 `;
     const result = await runProjectWithConfigFile(
@@ -175,7 +206,8 @@ export default {
     expect(outcome.codegenFiles?.toSorted()).toEqual([path.join(project.dir, SPEC), nested].toSorted());
     expect(existsSync(nested)).toBe(true);
     const code = readFileSync(nested, 'utf8');
-    expect(code).toContain('test.describe("counter again", () => {');
+    expect(code).toContain("test.describe('counter again', () => {");
     expect(code).toContain('await page.getByRole("button", { name: "Increment", exact: true }).click();');
+    expect(code).toContain('await expect(page.getByRole("status", { name: "Counter", exact: true })).toContainText("1");');
   });
 });

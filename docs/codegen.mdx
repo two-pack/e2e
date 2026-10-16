@@ -1,13 +1,13 @@
 ---
 title: Export to Playwright
-description: Turn what the agent did in a passing run into a Playwright Test file you can run without a model.
+description: Turn a passing run into a Playwright Test file that runs the same test without a model.
 ---
 
-`e2e run --codegen` writes the agent steps of every passing test as
-Playwright code. Each `agent.act` call becomes the clicks, fills, and key
-presses the agent made in that run, addressed by role and accessible name or
-test id. Use it to see what a step did, to seed a plain Playwright
-suite, or to keep a hot path running without model calls.
+`e2e run --codegen` writes each test file of the run as a Playwright Test
+file. The file is your test, converted: every `agent.*` call becomes what the
+agent did or checked in that run, and everything else (loops, helpers,
+`expect` calls, `screen` locators) is carried over in Playwright's spelling.
+The result runs with `npx playwright test`, with no model and no e2e.
 
 <CodeGroup>
 ```bash npm
@@ -41,91 +41,137 @@ For this test:
 
 ```ts title="tests/checkout.e2e.ts"
 import { test } from '@e2e-dev/web';
-import { credentials } from 'e2e';
+import { credentials, expect } from 'e2e';
+import { z } from 'zod';
 
-test('signs in and buys a hat', async ({ app, agent }) => {
-  const admin = credentials.user('admin');
+test('signs in and buys a hat', async ({ app, agent, screen }) => {
+  const buyer = credentials.user('buyer');
   await app.open('/login');
-  await agent.act('sign in', { params: { username: admin.username, password: admin.password } });
+  await agent.act('sign in', { params: { username: buyer.username, password: buyer.password } });
+  await agent.waitFor('the shop is shown', { timeout: 10_000 });
   await agent.act('add the blue hat to the cart and check out');
-  await agent.assert('the order confirmation is shown');
+  await agent.assert('the order is confirmed');
+  const order = await agent.extract('the order number', { schema: z.object({ id: z.number() }) });
+  expect(order.id).toBeGreaterThan(0);
+  await expect(screen.getByRole('button', 'Track order')).toBeVisible();
 });
 ```
 
 the web engine writes:
 
 ```ts title=".e2e/codegen/web/tests/checkout.spec.ts"
-import { test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
+import { z } from 'zod';
 
 test.use({ baseURL: process.env["BASE_URL"] ?? "http://localhost:3000/" });
 
 function secret(variable: string): string { /* reads process.env[variable] */ }
 function within(page: Page, key: string): Locator { /* the row or list item holding key */ }
+const credentials = { /* e2e's credentials, from E2E_USER_<NAME>_USERNAME and _PASSWORD */ };
 
-test("signs in and buys a hat", async ({ page }) => {
-  // app.open (tests/checkout.e2e.ts:7)
-  await page.goto("/login");
-
-  // agent.act: sign in (tests/checkout.e2e.ts:8)
-  await page.getByRole("textbox", { name: "Username", exact: true }).fill("admin");
-  await page.getByRole("textbox", { name: "Password", exact: true }).fill(secret("E2E_USER_ADMIN_PASSWORD"));
+test('signs in and buys a hat', async ({ page }) => {
+  const buyer = credentials.user('buyer');
+  await page.goto('/login');
+  // agent.act: sign in
+  await page.getByRole("textbox", { name: "Email", exact: true }).fill("buyer@example.com");
+  await page.getByRole("textbox", { name: "Password", exact: true }).fill(secret("E2E_USER_BUYER_PASSWORD"));
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
-
-  // agent.act: add the blue hat to the cart and check out (tests/checkout.e2e.ts:9)
+  // agent.waitFor: the shop is shown
+  await expect(page).toHaveURL("/shop", { timeout: 10_000 });
+  await expect(page.getByRole("heading", { name: "Hats", exact: true })).toBeVisible({ timeout: 10_000 });
+  // agent.act: add the blue hat to the cart and check out
   await within(page, "Blue hat").getByRole("button", { name: "Add to cart", exact: true }).click();
   await page.getByRole("link", { name: "Cart", exact: true }).click();
   await page.getByRole("button", { name: "Check out", exact: true }).click();
-
-  // agent.assert: the order confirmation is shown (tests/checkout.e2e.ts:10)
-  // TODO: agent.assert was a model judgment; write it as an expect() on what it checked
+  // agent.assert: the order is confirmed
+  await expect(page.getByRole("status", { name: "Order", exact: true })).toContainText("Order #1042 confirmed");
+  // agent.extract: the order number
+  await expect(page.getByRole("status", { name: "Order", exact: true })).toContainText("#1042");
+  const order = ({"id":1042});
+  expect(order.id).toBeGreaterThan(0);
+  await expect(page.getByRole('button', { name: 'Track order', exact: true })).toBeVisible();
 });
 ```
 
 Run it with Playwright Test like any other spec. Set `BASE_URL` when the app
 is not at the URL the e2e target used.
 
-- A node is found by test id first, then role and accessible name, then
-  placeholder, the structural selector, and text. A node that sat in a row,
-  list item, group, or dialog is scoped to it by `within()`, and one of
-  several identical controls gets `.nth()`. The web engine's
-  [`testIdAttribute`](/browser) is set with `selectors.setTestIdAttribute`.
-- A secret fill reads the variable that overrides the secret in the e2e
-  config: `E2E_USER_<CREDENTIAL>_PASSWORD` for a credential's password,
-  `E2E_SECRET_<NAME>` for anything in `secrets`. The value never reaches the
-  file.
-- `app.open` becomes `page.goto`. When the first `agent.act` started on a page
-  nothing in the test opened, the file opens that page first.
+## How each agent call becomes code
 
-## What stays a TODO
+- **`agent.act`** becomes the clicks, fills, selects, and key presses the
+  agent made, whether the model chose them or the [replay cache](/cache)
+  replayed them.
+- **`agent.assert`** becomes the `expect` calls that prove it. Once the
+  judgment passes, the judge is asked one more question about the same
+  screen: which facts on it show the assertion holds. The runner checks every
+  proposed fact against that screen and keeps only the ones it bears out: a
+  node is visible, contains a text, holds a value, is checked or enabled, a
+  text is nowhere on screen, or the URL is a path.
+- **`agent.waitFor`** becomes the same `expect` calls with the call's
+  `timeout` (30 seconds when it names none). Playwright retries each until
+  then, as `waitFor` polled.
+- **`agent.extract`** becomes the value it returned in the run, behind the
+  checks that show that value on screen, so the test code that reads it runs
+  as before.
 
-The file keeps every step of the test in order. Steps with no actions to
-replay are comments where they ran:
+The extra question costs one judge call for each passing judgment, and only
+in a `--codegen` run. It never changes a test's result: when it fails, the
+call is written as a `throw` that names it, and you write the `expect` by
+hand.
 
-- `agent.assert`, `agent.waitFor`, and `agent.extract` were model judgments.
-  Write each as an `expect()` on what it checked.
-- Steps the test code ran itself, a `screen` locator or an `expect`, are named
-  with their label and line. Port them by hand; they were already
-  deterministic.
+A node is found by test id first, then role and accessible name, then
+placeholder, the structural selector, and text. A node that sat in a row,
+list item, group, or dialog is scoped to it by `within()`, and one of several
+identical controls gets `.nth()`. The web engine's
+[`testIdAttribute`](/browser) is set with `selectors.setTestIdAttribute`.
+
+## How the rest of the test is converted
+
+| e2e | Playwright |
+| --- | --- |
+| `app`, `screen`, `browser` fixtures | `page` |
+| `app.open(url)`, `app.open()` | `page.goto(url)`, `page.goto("/")` |
+| `app.back()`, `app.restart()` | `page.goBack()`, `page.reload()` |
+| `getByRole(role, 'Name')`, `getByRole(role, { name })` | `getByRole(role, { name: 'Name', exact: true })`: e2e matches the whole name by default |
+| `getByText`, `getByLabel`, `getByPlaceholder` with a string | the same with `{ exact: true }` |
+| `tap()`, `doubleTap()`, `secondaryTap()` | `click()`, `dblclick()`, `click({ button: "right" })` |
+| `selectOption('Large')` | `selectOption({ label: 'Large' })`: e2e matches the label |
+| `scrollIntoView()`, `textContent()`, `allTextContents()` | `scrollIntoViewIfNeeded()`, `innerText()`, `allInnerTexts()` |
+| `toBeSelected()`, `toBeExpanded()` | `toHaveAttribute("aria-selected", "true")`, `"aria-expanded"` |
+| `credentials.user(name)` | a helper reading `E2E_USER_<NAME>_USERNAME` (else the configured username) and `E2E_USER_<NAME>_PASSWORD` |
+| `secrets.get(name)` | a helper reading `E2E_SECRET_<NAME>` |
+| `unique(value)` | `value` |
+| test and describe options (`tags`, `session`, `requires`) | a comment beside the title |
+| `session.save(name)` | a comment: keep sign-in with Playwright's `storageState` |
+
+A secret never reaches the file. An agent's secret fill reads the variable
+that overrides the secret in the e2e config, the same one the helpers read.
+
+## What a run cannot record
+
+- A test that did not pass is still converted, but each of its agent calls
+  is a `throw`: there is no recording to write from it. The same goes for a
+  call no passing test reached, such as one inside an `if` the run never
+  entered.
 - A project tool the agent called, or a value it typed that it read off the
-  screen in that run, is a `TODO` inside the step.
+  screen in that run, is a `TODO` comment inside the step.
+- A step whose recording could not be kept whole (a value that held a secret,
+  more than 50 actions, a node with nothing durable to find it by) carries a
+  `NOTE` above its calls.
+- A member of a `test.describe.serial` group and an [`e2e explore`](/explore)
+  run are not recorded.
 
-A step whose recording could not be kept whole (a value that held a secret,
-more than 50 actions, a node with nothing durable to find it by) carries a
-`NOTE` above its calls.
-
-Only passing tests are written. A failed, skipped, or interrupted test, a
-member of a `test.describe.serial` group, and an [`e2e explore`](/explore)
-run write nothing.
+When the test file cannot be read or parsed, the run writes the recorded
+steps alone, one Playwright test per passing test.
 
 ## The code is a snapshot
 
 The agent adapts to the screen on every run; the file does not. It is what
-the agent did once, in the run that wrote it, against the data that run saw.
-Read it before you commit it, and re-run with `--codegen` after the app
-changes. A step replayed from the [replay cache](/cache) writes the same code
-as the run that recorded it, so `--codegen` costs no model calls on a warm
-cache.
+the agent did and checked once, in the run that wrote it, against the data
+that run saw. Read it before you commit it, and run `--codegen` again after
+the app changes. A step replayed from the [replay cache](/cache) writes the
+same actions as the run that recorded it.
 
 Only the web engine writes code. Any other target gets a notice
 (`--codegen wrote no code for target "ios": engine "mobile" declares no codegen`).

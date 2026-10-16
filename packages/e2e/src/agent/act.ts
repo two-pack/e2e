@@ -40,6 +40,7 @@ import type { ObservedScreen } from './replay.ts';
 import { appLocation } from '../cache/route.ts';
 import { OperationQueue } from './operation-queue.ts';
 import { StepAccounting } from './step-accounting.ts';
+import { recordCodegenJudgment } from './codegen-checks.ts';
 import { failedStepOutcome, StepTraceSession, type StepCacheHost, type StepOutcome } from './step-cache.ts';
 import type { ParamTemplate } from '../cache/template.ts';
 
@@ -168,6 +169,17 @@ export async function dispatchAgentStep(
       }
       const evidence = await dispatch.captureEvidence();
       dispatch.settle(validateVerdict(verdict, agent.executor.name), evidence);
+      if (spec.kind === 'assert') {
+        // The executor judged with its own look at the screen; the checks are
+        // derived from a fresh one, taken once the verdict passed.
+        await recordCodegenJudgment(runtime, {
+          api: spec.api,
+          agent: raw.agent,
+          instruction: spec.instruction,
+          observation: undefined,
+          timeoutMs: agent.config.judgmentTimeout,
+        });
+      }
       await dispatch.conclude('passed');
       return dispatch.result();
     } catch (cause) {

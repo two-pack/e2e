@@ -661,6 +661,9 @@ importers:
 
   packages/web:
     dependencies:
+      oxc-parser:
+        specifier: 0.152.0
+        version: 0.152.0
       playwright-core:
         specifier: 1.64.0
         version: 1.64.0

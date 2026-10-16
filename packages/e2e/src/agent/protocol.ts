@@ -3,6 +3,8 @@
  * `schema/agent-judgment-v2.schema.json`; the schema wins on any divergence,
  * and `tests/unit/agent-judgment-schema.test.ts` holds both to the same answers.
  * The extract envelope has no published schema: its value is the caller's.
+ * The `--codegen` checks grammar mirrors `schema/agent-codegen-checks-v1.schema.json`
+ * the same way (`tests/unit/agent-codegen-checks-schema.test.ts`).
  *
  * Validation is runner-owned: a response that does not match exactly is a
  * policy error before any engine dispatch.
@@ -159,6 +161,74 @@ export function validateExtractResponse(value: unknown): ProtocolValidation<Extr
   const bounded = asBoundedString(missing, 0, EXPLANATION_MAX_LENGTH);
   if (bounded === null) return fail('missing must be a bounded string or null');
   return { ok: true, value: { found: false, missing: bounded.trim() === '' ? undefined : bounded } };
+}
+
+/** The `--codegen` checks grammar's name, sent as the structured-output name. */
+export const CHECKS_SCHEMA_NAME = 'agent-codegen-checks-1';
+
+/** Most checks one judgment keeps: a handful prove a condition; more is a page dump. */
+export const MAX_CHECKS = 6;
+
+/** Longest text a check compares, in code points. */
+const MAX_CHECK_TEXT = 200;
+
+/** Longest node id a check names. */
+const MAX_CHECK_NODE = 32;
+
+const CHECK_KINDS = ['visible', 'text', 'value', 'checked', 'unchecked', 'enabled', 'disabled', 'absent', 'url'] as const;
+
+type CheckKind = (typeof CHECK_KINDS)[number];
+
+/** One check the judge proposes for `--codegen`: every field present, the unused ones null. */
+export interface ProposedCheck {
+  readonly kind: CheckKind;
+  readonly node: string | null;
+  readonly text: string | null;
+}
+
+/** The provider-facing `agent-codegen-checks-1` grammar: every field required, the unused ones nullable, as strict providers need. */
+export const CHECKS_SCHEMA: JSONSchema7 = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['checks'],
+  properties: {
+    checks: {
+      type: 'array',
+      maxItems: MAX_CHECKS,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['kind', 'node', 'text'],
+        properties: {
+          kind: { type: 'string', enum: [...CHECK_KINDS] },
+          node: { type: ['string', 'null'], maxLength: MAX_CHECK_NODE },
+          text: { type: ['string', 'null'], maxLength: MAX_CHECK_TEXT },
+        },
+      },
+    },
+  },
+};
+
+export function validateChecksResponse(value: unknown): ProtocolValidation<readonly ProposedCheck[]> {
+  const record = asClosedRecord(value, ['checks']);
+  if (record === null) return fail('response is not an agent-codegen-checks-1 object');
+  const checks = record['checks'];
+  if (!Array.isArray(checks) || checks.length > MAX_CHECKS) return fail(`checks must be an array of at most ${String(MAX_CHECKS)}`);
+  const proposed: ProposedCheck[] = [];
+  for (const item of checks as unknown[]) {
+    const check = asClosedRecord(item, ['kind', 'node', 'text']);
+    if (check === null || !('kind' in check) || !('node' in check) || !('text' in check)) {
+      return fail('each check must be { kind, node, text }');
+    }
+    const { kind, node, text } = check;
+    if (!CHECK_KINDS.some((known) => known === kind)) return fail(`kind must be one of ${CHECK_KINDS.join(', ')}`);
+    const nodeId = node === null ? null : asBoundedString(node, 0, MAX_CHECK_NODE);
+    if (node !== null && nodeId === null) return fail('node must be a node id or null');
+    const bounded = text === null ? null : asBoundedString(text, 0, MAX_CHECK_TEXT);
+    if (text !== null && bounded === null) return fail('text must be a short string or null');
+    proposed.push({ kind: kind as CheckKind, node: nodeId, text: bounded });
+  }
+  return { ok: true, value: proposed };
 }
 
 function fail(issue: string): { ok: false; issue: string } {

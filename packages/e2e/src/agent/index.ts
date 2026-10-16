@@ -9,6 +9,7 @@
  * of a planned flow (`agent.act`), and one cache design serves the latter.
  */
 
+import { recordCodegenJudgment } from './codegen-checks.ts';
 import { resolveVision } from '../config/agent.ts';
 import { TestError, withHint } from '../internal/errors.ts';
 import { rejectUnknownOptions } from '../internal/options.ts';
@@ -163,7 +164,16 @@ export function createAgentFixture(runtime: AgentContext): Agent {
             invocation.note({ explanation: judgment.explanation });
             // An inconclusive round is one more thing to wait for; only the
             // deadline turns it into a failure, with this explanation attached.
-            if (judgment.verdict === 'holds') return;
+            if (judgment.verdict === 'holds') {
+              await recordCodegenJudgment(runtime, {
+                api: 'agent.waitFor',
+                agent: options?.agent,
+                instruction: condition,
+                observation,
+                timeoutMs: config.judgmentTimeout,
+              });
+              return;
+            }
             observation = await waitForNextJudgment(invocation, {
               since: observation,
               intervalMs,
@@ -219,7 +229,17 @@ export function createAgentFixture(runtime: AgentContext): Agent {
               );
             }
             const validation = await schema['~standard'].validate(answer.value);
-            if (validation.issues === undefined) return validation.value;
+            if (validation.issues === undefined) {
+              await recordCodegenJudgment(runtime, {
+                api: 'agent.extract',
+                agent: options.agent,
+                instruction,
+                observation,
+                value: validation.value,
+                timeoutMs: config.judgmentTimeout,
+              });
+              return validation.value;
+            }
             const issue = validation.issues.map(describeIssue).join('; ');
             invocation.recordSchemaRejection(EXTRACT_SCHEMA_NAME);
             if (!invocation.canAsk()) {
@@ -269,7 +289,16 @@ export function createAgentFixture(runtime: AgentContext): Agent {
           const screenshot = evidenceAllowed(invocation, options?.screenshot)
             ? await captureEvidence(invocation)
             : undefined;
-          if (judgment.verdict === 'holds') return;
+          if (judgment.verdict === 'holds') {
+            await recordCodegenJudgment(runtime, {
+              api: 'agent.assert',
+              agent: options?.agent,
+              instruction: assertion,
+              observation,
+              timeoutMs: config.judgmentTimeout,
+            });
+            return;
+          }
           // Both other verdicts fail the test. `inconclusive` gets its own code
           // so a reader can tell "the screen contradicted the assertion" from
           // "the screen did not show enough to judge"; neither is a pass.

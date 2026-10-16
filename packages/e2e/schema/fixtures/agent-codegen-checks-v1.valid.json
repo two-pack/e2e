@@ -1,0 +1,7 @@
+{
+  "checks": [
+    { "kind": "text", "node": "n12", "text": "Saved profile for Ada Lovelace" },
+    { "kind": "checked", "node": "n7", "text": null },
+    { "kind": "url", "node": null, "text": "/dashboard" }
+  ]
+}

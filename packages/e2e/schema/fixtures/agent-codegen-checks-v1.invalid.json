@@ -1,0 +1,5 @@
+{
+  "checks": [
+    { "kind": "screenshot", "node": "n12", "text": null, "confidence": 0.9 }
+  ]
+}
