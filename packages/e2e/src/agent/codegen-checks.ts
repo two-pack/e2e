@@ -22,7 +22,7 @@ import type { AgentObservation, RedactedNode } from './observation.ts';
 import { isRelocatableDescriptor, describePosition } from '../cache/relocate.ts';
 import type { TraceTargetDescriptor } from '../cache/trace.ts';
 import type { CodegenCheck, CodegenTargetDescriptor } from '../engine/codegen.ts';
-import { shownTextOf } from '../run/codegen.ts';
+import { displayedTextOf, shownTextOf } from '../run/codegen.ts';
 import { collapseText } from '../internal/text.ts';
 import { CHECKS_SCHEMA, CHECKS_SCHEMA_NAME, MAX_CHECKS, validateChecksResponse, type ProposedCheck } from './protocol.ts';
 
@@ -158,7 +158,7 @@ function confirmCheck(
       return { kind: 'visible', target };
     case 'text':
       // A script reads the text on screen, not a name an author or the engine gave the node.
-      return text !== undefined && shownReadsOf(node, redact).some((read) => read.includes(text)) ? { kind: 'text', target, text } : undefined;
+      return text !== undefined && shownReadsOf(node).some((read) => read.includes(text)) ? { kind: 'text', target, text } : undefined;
     case 'value':
       return text !== undefined && collapseText(node.value ?? '') === text ? { kind: 'value', target, value: text } : undefined;
     case 'checked':
@@ -197,7 +197,7 @@ function confirmCollection(
     return { kind: 'count', role, count: items.length };
   }
   if (items.length < 2 || items.length > MAX_ORDER_ITEMS) return undefined;
-  const texts = items.map((item) => shownTextOf(item, redact) ?? collapseText(item.text ?? item.name ?? ''));
+  const texts = items.map((item) => displayedTextOf(item) || collapseText(item.name ?? ''));
   return texts.every((item) => item !== '' && redact(item) === item) ? { kind: 'order', role, texts } : undefined;
 }
 
@@ -206,8 +206,8 @@ function confirmCollection(
  * own text, what its descendants show, its value, and its name only when
  * nothing else does (a leaf named by its own content).
  */
-function shownReadsOf(node: RedactedNode, redact: (text: string) => string): string[] {
-  const shown = [node.text, shownTextOf(node, redact), node.value].filter((read): read is string => read !== undefined && read.trim() !== '');
+function shownReadsOf(node: RedactedNode): string[] {
+  const shown = [displayedTextOf(node), node.value].filter((read): read is string => read !== undefined && read.trim() !== '');
   return (shown.length > 0 ? shown : [node.name ?? '']).map(collapseText);
 }
 

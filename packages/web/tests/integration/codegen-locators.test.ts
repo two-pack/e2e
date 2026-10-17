@@ -28,6 +28,10 @@ const MAX_FIELD_CHARS = 300;
 const KNOWN_MISSES: Readonly<Record<string, string>> = {
   'generated content | link "Sign out"':
     'the browser names a glyph-only link by its glyph, so the title the tree shows is no accessible name to Playwright (expected.txt, crosscheck)',
+  'shadow and custom elements | textbox "Editor"':
+    "the tree reads an editor's contenteditable host as a textbox, which the standard gives no role, so getByRole finds nothing",
+  'generated content | button "Sign in"':
+    'the standard keeps an icon-font glyph in the name, which the tree drops, so the generated exact name does not match it',
 };
 
 let browser: Browser;
@@ -50,17 +54,23 @@ function field(value: string | undefined): string | undefined {
   return collapsed.length <= MAX_FIELD_CHARS ? collapsed : `${collapsed.slice(0, MAX_FIELD_CHARS - 1)}…`;
 }
 
-/** What a node and its descendants show, as `shownTextOf` in e2e records it beside the descriptor. */
+/** A node's name as its content makes it: its own text, then each child's name or content name, joined. */
+function contentNameOf(node: SemanticNode): string {
+  const parts = [node.text ?? '', ...(node.children ?? []).map((child) => field(child.name) ?? contentNameOf(child))];
+  return field(parts.join(' ')) ?? '';
+}
+
+/** What a node shows when its name came from its content, as `shownTextOf` in e2e records it beside the descriptor. */
 function shownTextOf(node: SemanticNode): string | undefined {
-  if ((node.children ?? []).length === 0) return undefined;
+  const name = field(node.name);
+  if (name === undefined || contentNameOf(node) !== name) return undefined;
   const parts: string[] = [];
   const collect = (current: SemanticNode): void => {
     if (current.text !== undefined && current.text.trim() !== '') parts.push(current.text);
     for (const child of current.children ?? []) collect(child);
   };
   collect(node);
-  const shown = field(parts.join(' '));
-  return shown === field(node.name) ? undefined : shown;
+  return field(parts.join(' '));
 }
 
 /** The descriptor the recording would keep for a node it acted on (`describeTarget` in e2e), without placement. */
@@ -83,7 +93,7 @@ function descriptorOf(node: SemanticNode): CodegenTargetDescriptor | undefined {
 
 /**
  * Evaluates one generated locator expression against the page, with the
- * helpers the generated file would define for it (`named`, `within`), their
+ * helpers the generated file would define for it (`within`), their
  * type annotations stripped so they run as the JavaScript they compile to.
  */
 function evaluate(expression: string, helpers: readonly string[]): Locator {

@@ -80,8 +80,8 @@ function judge(call: FakeCall): unknown {
   };
 }
 
-/** The counter as the generated code finds it: by the name its author gave it, or by what it shows. */
-const COUNTER = 'page.getByRole("status", { name: named("Counter") }).or(page.getByRole("status").filter({ hasText: /^\\s*Counter\\s*$/u }))';
+/** The counter as the generated code finds it: by the name its author gave it. */
+const COUNTER = 'page.getByRole("status", { name: "Counter", exact: true })';
 
 const HELPER = fileURLToPath(new URL('../helpers/fake-model.ts', import.meta.url));
 
@@ -128,7 +128,7 @@ describe('--codegen on the in-process transport', () => {
         "  test('increments through the agent', async ({ page }) => {",
         '    await page.goto("/");',
         '    // agent.act: increment the counter once',
-        '    await page.getByRole("button", { name: named("Increment") }).click();',
+        '    await page.getByRole("button", { name: "Increment", exact: true }).click();',
         '    // agent.assert: the counter shows 1',
         `    await expect(${COUNTER}).toContainText("1");`,
         '    await expect(page.getByRole("status")).toHaveCount(1);',
@@ -219,7 +219,7 @@ export default {
     expect(existsSync(nested)).toBe(true);
     const code = readFileSync(nested, 'utf8');
     expect(code).toContain("test.describe('counter again', () => {");
-    expect(code).toContain('await page.getByRole("button", { name: named("Increment") }).click();');
+    expect(code).toContain('await page.getByRole("button", { name: "Increment", exact: true }).click();');
     expect(code).toContain(`await expect(${COUNTER}).toContainText("1");`);
   });
 });

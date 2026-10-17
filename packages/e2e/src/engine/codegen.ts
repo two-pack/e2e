@@ -22,10 +22,11 @@ export type CodegenAction = RecordedAction;
  */
 export interface CodegenTargetDescriptor extends TraceTargetDescriptor {
   /**
-   * The text the node and its descendants show, joined in order, when it
-   * differs from the node's name: a list row the engine names from its
-   * children's names (a button's label among them) shows their text instead.
-   * Bounded and redacted like the other fields.
+   * What the node shows, present only when its name is the one its content
+   * makes rather than one an author gave: a list row an engine names from its
+   * children's names (a button's label among them), where the page's own
+   * accessible name, by the standard, is none. Bounded and redacted like the
+   * other fields.
    */
   readonly shownText?: string;
 }

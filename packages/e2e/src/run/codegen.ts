@@ -55,22 +55,47 @@ export interface CodegenStepRecorder {
 const MAX_SHOWN_TEXT_CHARS = MAX_TRACE_DESCRIPTOR_CHARS;
 
 /**
- * The text a node and its descendants show, joined in document order, when
- * it differs from the node's name; undefined for a leaf, for nothing shown,
- * or for text the redactor would alter. An engine may name a node from its
- * descendants' names (a list row by its title and a button's label), which a
- * script matching the text on screen cannot find; this is what it can.
+ * The text a node and its descendants show, their `text` joined in document
+ * order and whitespace collapsed: what a script reading the page sees, which
+ * leaves out the names an author gave (a button's `aria-label`).
  */
-export function shownTextOf(node: RedactedNode | undefined, redact: (text: string) => string): string | undefined {
-  if (node === undefined || (node.children ?? []).length === 0) return undefined;
+export function displayedTextOf(node: RedactedNode): string {
   const parts: string[] = [];
   const collect = (current: RedactedNode): void => {
     if (current.text !== undefined && current.text.trim() !== '') parts.push(current.text);
     for (const child of current.children ?? []) collect(child);
   };
   collect(node);
-  const shown = collapseText(parts.join(' '));
-  if (shown === '' || shown === collapseText(node.name ?? '') || redact(shown) !== shown) return undefined;
+  return collapseText(parts.join(' '));
+}
+
+/**
+ * A node's name as its content makes it: its own text, then each child's
+ * name, or the content name of a child with none, joined in order.
+ */
+function contentNameOf(node: RedactedNode): string {
+  const children = (node.children ?? []).map((child) => collapseText(child.name ?? '') || contentNameOf(child));
+  return collapseText([node.text ?? '', ...children].join(' '));
+}
+
+/**
+ * What a node shows, kept when its name is the one its content makes rather
+ * than one an author gave: an engine that names a list row from its children
+ * (its title, a button's label) gives a name a script reading the page finds
+ * no trace of, while the text shown is there. Undefined for an author's name,
+ * for nothing shown, or for text the redactor would alter. An engine's code
+ * generation reads its presence as "the name came from the content".
+ */
+export function shownTextOf(node: RedactedNode | undefined, redact: (text: string) => string): string | undefined {
+  if (node === undefined) return undefined;
+  const name = collapseText(node.name ?? '');
+  if (name === '') return undefined;
+  const content = contentNameOf(node);
+  // A name cut at the engine's limit ends in an ellipsis; its content only has to begin the same.
+  const fromContent = name.endsWith('…') ? content.startsWith(name.slice(0, -1)) : content === name;
+  if (!fromContent) return undefined;
+  const shown = displayedTextOf(node);
+  if (shown === '' || redact(shown) !== shown) return undefined;
   return bound(shown, MAX_SHOWN_TEXT_CHARS);
 }
 

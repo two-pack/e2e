@@ -26,9 +26,9 @@ const PLAYWRIGHT_ROLES: Readonly<Record<string, string>> = { image: 'img' };
 /**
  * Roles e2e names from their content so the model reads a row or a message
  * by what it says (`NAME_FROM_CONTENT_ROLES` in `in-page/read-semantics.ts`),
- * where accname, and so Playwright's `getByRole`, leaves them unnamed unless
- * the author named them. Such a node is found by either: the name an author
- * gave it, or its text as the whole of what it shows.
+ * where by the standard only an author names them. When the recording says
+ * the name came from the content (`shownText`), the node is found by the text
+ * it shows instead.
  */
 const CONTENT_NAMED_ROLES: ReadonlySet<string> = new Set(['listitem', 'status', 'alert']);
 
@@ -51,13 +51,12 @@ export const PLAYWRIGHT_TEST_ID_ATTRIBUTE = 'data-testid';
 export interface FileNeeds {
   secrets: boolean;
   within: boolean;
-  named: boolean;
   testIdAttribute: boolean;
 }
 
 /** Writes statements for one file, noting the helpers they need. */
 export class StatementWriter {
-  readonly needs: FileNeeds = { secrets: false, within: false, named: false, testIdAttribute: false };
+  readonly needs: FileNeeds = { secrets: false, within: false, testIdAttribute: false };
 
   constructor(
     private readonly testIdAttribute: string,
@@ -196,15 +195,11 @@ export class StatementWriter {
     if (target.testId !== undefined) {
       if (this.testIdAttribute !== PLAYWRIGHT_TEST_ID_ATTRIBUTE) this.needs.testIdAttribute = true;
       base = `${scope}.getByTestId(${literal(target.testId)})`;
+    } else if (role !== undefined && CONTENT_NAMED_ROLES.has(role) && target.shownText !== undefined) {
+      // e2e named it from its content; by the standard it has no name, so it is found by what it shows.
+      base = `${scope}.getByRole(${literal(role)}).filter({ hasText: ${wholeTextPattern(target.shownText)} })`;
     } else if (role !== undefined && target.name !== undefined) {
-      const name = this.named(target.name);
-      base = `${scope}.getByRole(${literal(role)}, { name: ${name} })`;
-      // A name e2e reads where Playwright reads none: a row or a message by
-      // what it shows, an editor's host by its label.
-      if (CONTENT_NAMED_ROLES.has(role)) {
-        base = `${base}.or(${scope}.getByRole(${literal(role)}).filter({ hasText: ${wholeTextPattern(target.shownText ?? target.name)} }))`;
-      }
-      if (role === 'textbox') base = `${base}.or(${scope}.getByLabel(${name}))`;
+      base = `${scope}.getByRole(${literal(role)}, { name: ${literal(target.name)}, exact: true })`;
     } else if (target.role === 'iframe' && target.name !== undefined) {
       // ARIA has no iframe role; a frame's name is its title, or a label an author gave it.
       const name = JSON.stringify(target.name);
@@ -221,12 +216,6 @@ export class StatementWriter {
       base = `${scope}.locator(":focus") /* TODO: the recording kept nothing to find this node by */`;
     }
     return target.position !== undefined && target.position.of > 1 ? `${base}.nth(${String(target.position.index)})` : base;
-  }
-
-  /** A `named(...)` call matching an accessible name the way e2e does; see `NAMED_HELPER`. */
-  private named(name: string): string {
-    this.needs.named = true;
-    return name.endsWith('…') ? `named(${literal(name.slice(0, -1))}, true)` : `named(${literal(name)})`;
   }
 
   /** A location on the app's own origin as a path the `baseURL` resolves; any other location whole. */
@@ -248,7 +237,6 @@ export class StatementWriter {
     return [
       ...(this.needs.testIdAttribute ? [`selectors.setTestIdAttribute(${literal(this.testIdAttribute)});`, ''] : []),
       ...(this.needs.secrets ? SECRET_HELPER : []),
-      ...(this.needs.named ? NAMED_HELPER : []),
       ...(this.needs.within ? WITHIN_HELPER : []),
     ];
   }
@@ -317,21 +305,6 @@ const WITHIN_HELPER = [
   '/** The innermost row, list item, group, region, or dialog whose text includes `key`: where the agent found the element. */',
   'function within(page: Page, key: string): Locator {',
   `  return page.locator(${literal(CONTAINER_SELECTOR)}).filter({ hasText: key }).last();`,
-  '}',
-  '',
-];
-
-/**
- * Matches an accessible name the way e2e's role queries do: the whole name,
- * case-sensitive, with icon-font glyphs (private-use characters, which e2e
- * drops from a name and Playwright keeps) allowed around its words. `prefix`
- * matches a name e2e cut at its limit.
- */
-const NAMED_HELPER = [
-  '/** An accessible name as e2e matches it: the whole name, with icon-font glyphs allowed around its words. */',
-  'function named(name: string, prefix = false): RegExp {',
-  '  const words = name.trim().split(/\\s+/u).map((word) => word.replace(/[.*+?^${}()|[\\]\\\\/]/gu, "\\\\$&"));',
-  '  return new RegExp(`^[\\\\s\\\\p{Co}]*${words.join("[\\\\s\\\\p{Co}]+")}${prefix ? "" : "[\\\\s\\\\p{Co}]*$"}`, "u");',
   '}',
   '',
 ];
