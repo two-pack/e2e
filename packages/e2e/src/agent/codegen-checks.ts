@@ -22,11 +22,11 @@
 
 import { describeTarget, containerKey } from './actions.ts';
 import { Invocation, type AgentContext } from './invocation.ts';
-import type { AgentObservation, RedactedNode } from './observation.ts';
+import { prepareObservation, type AgentObservation, type RedactedNode } from './observation.ts';
 import { isRelocatableDescriptor, describePosition } from '../cache/relocate.ts';
 import type { TraceTargetDescriptor } from '../cache/trace.ts';
 import type { CodegenCheck, CodegenDroppedCheck, CodegenJudgmentGap, CodegenTargetDescriptor } from '../engine/codegen.ts';
-import { codegenExtrasOf, displayedTextOf, type SeenScreens } from '../run/codegen.ts';
+import { codegenExtrasOf, displayedTextOf, type CodegenLog, type SeenScreens } from '../run/codegen.ts';
 import { carriesSecretMarker } from '../internal/redact.ts';
 import { bound } from '../cache/trace.ts';
 import { collapseText } from '../internal/text.ts';
@@ -53,10 +53,30 @@ const CHECKS_REQUEST = [
   'Cover every part of the instruction: a number of items is a "count", an order is an "order", an empty field is a "value" with text "".',
   'node is the id of a node in the observation, such as "n12", or of an element under <shown-earlier>, such as "p3"; null for "absent" and "url". text is null where the kind takes none.',
   'Prefer a node with a role and a name, and the shortest text that still proves the point. Never invent a node or a text the observation does not show.',
+  'A script finds a node by what it reads: a bare text that another node also shows (a title and a button both reading "Save") cannot be told apart, so name the node with a role instead.',
   'covers is the part of the instruction the check proves, copied word for word from the instruction.',
   'uncovered lists, copied word for word, each part of the instruction that none of these checks can prove; [] when the checks prove all of it.',
   'Respond with { "checks": [{ "kind": <kind>, "node": <id or null>, "text": <text or null>, "covers": <part of the instruction> }], "uncovered": [<part of the instruction>] }.',
 ].join('\n');
+
+/**
+ * For `--codegen`: looks at the screen a step other than an agent's left
+ * (a `screen` action or assertion, an `app.open`), so a later judgment knows
+ * what it showed. One capture with no pixels, redacted like an agent's; no
+ * model call. Does nothing in a run that asked for no code.
+ */
+export async function seeScreenForCodegen(runtime: AgentContext): Promise<void> {
+  const codegen = runtime.codegen;
+  if (codegen === undefined) return;
+  const raw = await runtime.engine.session.observe(runtime.engine.operation(), { pixels: false });
+  const observation = prepareObservation(raw, {
+    redact: runtime.redact,
+    redactCut: runtime.redactCut,
+    maxBytes: runtime.config.limits.maxObservationBytes,
+    appOrigin: runtime.app.base?.origin,
+  });
+  codegen.seen.saw(observation, runtime.redact);
+}
 
 /** What the judgment was, as the question frames it. */
 export interface CodegenChecksRequest {
@@ -85,7 +105,7 @@ export async function recordCodegenJudgment(runtime: AgentContext, request: Code
   const stepId = runtime.steps.currentStepId;
   const codegen = runtime.codegen;
   if (codegen === undefined || stepId === undefined) return;
-  const derived = await deriveCodegenChecks(runtime, codegen.seen, request);
+  const derived = await deriveCodegenChecks(runtime, codegen, request);
   const checks = derived?.checks ?? [];
   const serialized = request.value === undefined ? undefined : JSON.stringify(request.value);
   const keepValue = serialized !== undefined && runtime.redact(serialized) === serialized;
@@ -120,6 +140,8 @@ interface CheckContext {
   /** The elements the question listed under `<shown-earlier>`, by the id it gave them. */
   readonly earlier: ReadonlyMap<string, CodegenTargetDescriptor>;
   readonly redact: (text: string) => string;
+  /** The nodes of the screen the engine's code would find a target by; undefined when it cannot tell. */
+  readonly locate: (target: CodegenTargetDescriptor) => readonly string[] | undefined;
 }
 
 /**
@@ -127,7 +149,8 @@ interface CheckContext {
  * observation confirms. Undefined when the observation has no tree to check
  * against or the question failed in any way.
  */
-async function deriveCodegenChecks(runtime: AgentContext, seen: SeenScreens, request: CodegenChecksRequest): Promise<DerivedChecks | undefined> {
+async function deriveCodegenChecks(runtime: AgentContext, codegen: CodegenLog, request: CodegenChecksRequest): Promise<DerivedChecks | undefined> {
+  const { seen } = codegen;
   try {
     // A custom executor may run with no model at all; then there is no one to ask.
     if (runtime.select(request.agent).config.judge === undefined) return undefined;
@@ -143,8 +166,13 @@ async function deriveCodegenChecks(runtime: AgentContext, seen: SeenScreens, req
     const observation = request.observation ?? (await invocation.observe());
     if (observation.kind !== 'semantic') return undefined;
     // A screen not listed whole may hold what looks gone; nothing earlier is offered then.
+    const locate = (target: CodegenTargetDescriptor): readonly string[] | undefined => codegen.locate(target, observation);
+    // An element the code would still find on this screen is not gone, whatever e2e's own matching says.
+    const stillFound = (target: CodegenTargetDescriptor): boolean => (locate(target)?.length ?? 0) > 0;
     const earlier = new Map(
-      (observation.truncated ? [] : seen.goneFrom(observation, MAX_EARLIER_ELEMENTS)).map((target, index) => [`p${String(index + 1)}`, target] as const),
+      (observation.truncated ? [] : seen.goneFrom(observation, MAX_EARLIER_ELEMENTS, stillFound)).map(
+        (target, index) => [`p${String(index + 1)}`, target] as const,
+      ),
     );
     const instruction =
       request.value === undefined
@@ -161,7 +189,7 @@ async function deriveCodegenChecks(runtime: AgentContext, seen: SeenScreens, req
         earlier: [...earlier].map(([id, target]) => `${id} ${describeElement(target)}`),
       },
     });
-    const context: CheckContext = { observation, instruction: request.instruction, seen, earlier, redact: runtime.redact };
+    const context: CheckContext = { observation, instruction: request.instruction, seen, earlier, redact: runtime.redact, locate };
     const kept: { readonly check: CodegenCheck; readonly covers: string | undefined }[] = [];
     const dropped: { readonly proposed: ProposedCheck; readonly reason: string }[] = [];
     for (const check of proposed.checks) {
@@ -296,6 +324,9 @@ function confirmCheck(check: ProposedCheck, context: CheckContext): Confirmation
   if (check.kind === 'count' || check.kind === 'order') return confirmCollection(check.kind, node, text, observation, redact);
   const target = durableTarget(node.ref.id, observation, redact);
   if (target === undefined) return { reason: 'the node has nothing durable to find it by' };
+  if (!codeFindsOnly(context.locate(target), node.ref.id, target)) {
+    return { reason: 'the code would find it by what another element on screen shares' };
+  }
   const states = node.states ?? {};
   switch (check.kind) {
     case 'visible':
@@ -318,6 +349,18 @@ function confirmCheck(check: ProposedCheck, context: CheckContext): Confirmation
       return (states.disabled !== true) === enabled ? { check: { kind: 'enabled', target, enabled } } : { reason: `the node is not ${check.kind}` };
     }
   }
+}
+
+/**
+ * Whether the engine's code finds the node and nothing else: the node alone,
+ * or, for a target one of several twins, exactly the twins with the node at
+ * its recorded place, which `.nth()` picks. True when the engine cannot tell.
+ */
+function codeFindsOnly(found: readonly string[] | undefined, id: string, target: CodegenTargetDescriptor): boolean {
+  if (found === undefined) return true;
+  const { position } = target;
+  if (position !== undefined && position.of > 1) return found.length === position.of && found[position.index] === id;
+  return found.length === 1 && found[0] === id;
 }
 
 /**

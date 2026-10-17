@@ -21,10 +21,16 @@ it (a list row e2e named from its content by the text it shows, a name with
 its icon glyph, an editor's host by its label).
 
 A check that something is not shown counts only for what an earlier screen
-of the same test showed: an element gone (`toHaveCount(0)` on its locator) or
+of the same test showed, an agent step's or, in a `--codegen` run, the
+screen each other step left once it passed: an element gone (`toHaveCount(0)` on its locator) or
 a text absent. The judge also says which part of the instruction each check
 proves and which it could not check; a judgment the kept checks prove only in
 part gets a `NOTE` comment with the judge's explanation, the unchecked parts,
 and the dropped checks with why, a closing warning naming its line, and an
 entry under `run.codegen.gaps` in the report. `render` returns the code with
 those lines, and a `notice` event can carry `level: 'warning'`.
+
+A check is kept only when the locator written for it finds its node alone:
+the engine's new optional `codegen.locate` says which nodes of a screen a
+locator finds, so a title reading "Login" beside a button reading the same
+is dropped, not written as a `getByText` that matches both.

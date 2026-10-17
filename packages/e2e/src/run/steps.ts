@@ -380,6 +380,8 @@ export class StepRecorder {
   private readonly projectRoot: string | undefined;
   private readonly redact: ((text: string) => string) | undefined;
   private readonly signal: AbortSignal | undefined;
+  /** Runs after a step that passed, before its caller resumes; see `afterPassedSteps`. */
+  private afterPassed: ((step: { readonly kind: StepKind; readonly api: string }) => Promise<void>) | undefined;
 
   constructor(
     private readonly attemptId: string,
@@ -396,6 +398,15 @@ export class StepRecorder {
   /** Replaces secret values in text the way every record is redacted; identity without a redactor. */
   redactText(text: string): string {
     return this.redact?.(text) ?? text;
+  }
+
+  /**
+   * Runs `hook` after every step that passes, before the test goes on: what
+   * `--codegen` uses to look at the screen a step left. It is not part of
+   * the step: its time is not the step's, and whatever it throws is dropped.
+   */
+  afterPassedSteps(hook: (step: { readonly kind: StepKind; readonly api: string }) => Promise<void>): void {
+    this.afterPassed = hook;
   }
 
   /** The step currently executing, when inside StepRecorder.run. */
@@ -462,6 +473,7 @@ export class StepRecorder {
       if (this.abandoned.has(record.id)) return result;
       record.durationMs = Date.now() - startedMs;
       if (options.verifies === true) this.lastVerified = Math.max(this.lastVerified, record.index);
+      if (this.afterPassed !== undefined) await this.afterPassed(record).catch(() => undefined);
       return result;
     } catch (cause) {
       if (this.abandoned.has(record.id)) {

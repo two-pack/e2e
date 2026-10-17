@@ -125,9 +125,11 @@ hand.
 
 A check that something is missing proves nothing when it could not have
 failed, so both kinds are kept only for something an earlier screen of the
-same test showed. Every screen an agent step of the test looked at counts,
-an `agent.act` step's included; a screen the test went through with
-`screen` locators alone, with no agent step on it, does not:
+same test showed. Every screen counts: the ones an agent step looked at,
+an `agent.act` step's included, and, in a `--codegen` run, the screen each
+other step left once it passed (an `app.open`, a `screen` action or
+`expect`). That last look is one capture with no model call, taken only when
+the run writes code. What showed only in the middle of a step is not seen:
 
 - **An element is gone.** The judge is shown the elements earlier screens of
   the test showed that the current one does not, and can name one. The code
@@ -146,6 +148,16 @@ Neither is kept when the screen was listed only in part, since what looks
 missing may be past the cut. Something no earlier screen showed, such as a
 task list that a signed-out user never saw, cannot be checked this way; the
 code says so (see below).
+
+### A check names one element
+
+A check is kept only when the locator written for it finds that element and
+nothing else on the screen the judgment passed on. On a sign-in card whose
+title reads "Login" like its button, `getByText("Login", { exact: true })`
+finds both, so a check on the title is dropped and one on the button kept.
+The engine answers which elements its locator would find (`locate` on
+[`codegen`](/reference/engine#code-generation)); the judge is asked to name
+an element by its role for the same reason.
 
 ### When the checks prove only part of a judgment
 

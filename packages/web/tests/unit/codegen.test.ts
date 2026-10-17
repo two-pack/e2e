@@ -1,6 +1,7 @@
 import type { CodegenAction, CodegenCheck, CodegenFile, CodegenRecording, CodegenStep, CodegenTargetDescriptor, CodegenTest } from 'e2e/engine';
 import { describe, expect, it } from 'vitest';
 import { playwrightCodegen } from '../../src/codegen.ts';
+import type { CodegenScreenNode } from 'e2e/engine';
 
 const APP_URL = 'http://127.0.0.1:4271/';
 
@@ -510,5 +511,39 @@ describe('playwright codegen from the test source', () => {
     const code = convert('test(\'broken\', async ({ agent }) => {', [CONVERTED_TEST]);
     expect(code).toContain('// The test source could not be read');
     expect(code).toContain('test.describe("checkout", () => {');
+  });
+});
+
+describe('playwright codegen locate', () => {
+  const locate = (target: CodegenTargetDescriptor, screen: readonly CodegenScreenNode[]) => playwrightCodegen(undefined).locate?.(target, screen);
+  // The sign-in card: a title that is a div reading "Login", a field, and the button reading "Login".
+  const signIn: CodegenScreenNode[] = [
+    { id: 'n1', role: 'main', shownText: 'Login Username Login' },
+    { id: 'n2', parent: 'n1', shownText: 'Login' },
+    { id: 'n3', parent: 'n1', role: 'textbox', name: 'Username', shownText: '' },
+    { id: 'n4', parent: 'n1', role: 'button', name: 'Login', shownText: 'Login' },
+  ];
+
+  it('finds a bare text wherever an element shows it, the button that reads the same included', () => {
+    expect(locate({ text: 'Login' }, signIn)).toEqual(['n2', 'n4']);
+  });
+
+  it('finds a node by role and name, a field by its label, and a test id alone', () => {
+    expect(locate({ role: 'button', name: 'Login' }, signIn)).toEqual(['n4']);
+    expect(locate({ role: 'textbox', name: 'Username' }, signIn)).toEqual(['n3']);
+    expect(locate({ testId: 'go', role: 'button', name: 'Login' }, [...signIn, { id: 'n5', role: 'link', testId: 'go', shownText: 'Go' }])).toEqual(['n5']);
+  });
+
+  it('finds a row named from its content by the whole of what it shows, and leaves out hidden nodes for a role', () => {
+    const rows: CodegenScreenNode[] = [
+      { id: 'r1', role: 'listitem', name: 'Buy milk', shownText: 'Buy milk' },
+      { id: 'r2', role: 'listitem', name: 'Buy milk now', shownText: 'Buy milk now' },
+      { id: 'r3', role: 'listitem', name: 'Buy milk', shownText: 'Buy milk', hidden: true },
+    ];
+    expect(locate({ role: 'listitem', name: 'Buy milk', shownText: 'Buy milk', standard: { name: '' } }, rows)).toEqual(['r1']);
+  });
+
+  it('cannot tell for a structural selector', () => {
+    expect(locate({ selector: 'main > div' }, signIn)).toBeUndefined();
   });
 });

@@ -168,10 +168,42 @@ export interface CodegenRendered {
   readonly gaps: readonly { readonly test: number; readonly step: number; readonly line: number }[];
 }
 
+/**
+ * One node of a screen as `locate` reads it: what the code `render` writes
+ * could find it by. Every text is the redacted one the agent read.
+ */
+export interface CodegenScreenNode {
+  /** The node's id on this screen. */
+  readonly id: string;
+  /** The id of the node it sits in; absent for the root. */
+  readonly parent?: string;
+  readonly role?: string;
+  readonly name?: string;
+  /** What the node and its descendants show, whitespace collapsed; its name for a leaf that shows nothing else. */
+  readonly shownText: string;
+  readonly testId?: string;
+  readonly placeholder?: string;
+  /** How the platform's standard reads it, where the engine reads it its own way. */
+  readonly standard?: StandardReading;
+  /** The key of the row or other container it sits in, as a descriptor's `within` names it. */
+  readonly within?: string;
+  /** The node is on the screen but not shown. */
+  readonly hidden?: boolean;
+}
+
 /** Writes recorded agent steps out as the engine's own test code (`e2e run --codegen`). */
 export interface EngineCodegen {
   /** The extension of the files `render` writes, with its leading dot: `.spec.ts`. */
   readonly extension: string;
   /** Returns the source text for one test file's tests. Runs in the runner process after the run. */
   render(file: CodegenFile): CodegenRendered;
+  /**
+   * The nodes of `screen` the locator `render` would write for `target`
+   * finds, by id in document order; undefined when the engine cannot tell.
+   * Runs in the worker while a judgment's checks are confirmed: a check is
+   * kept only when its locator finds the node it is about, and nothing else
+   * (or, for a target with a `position`, exactly its twins), and a `gone`
+   * check only when it finds nothing.
+   */
+  locate?(target: CodegenTargetDescriptor, screen: readonly CodegenScreenNode[]): readonly string[] | undefined;
 }

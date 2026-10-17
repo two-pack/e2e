@@ -41,6 +41,17 @@ test('leaves the counter behind', async ({ app, agent }) => {
   await agent.assert('the Increment button is gone and nothing is broken');
 });
 
+test('remembers what a screen step went through', async ({ app, agent }) => {
+  await app.open();
+  await app.open('/about');
+  await agent.assert('the Increment button was replaced, and nothing is broken');
+});
+
+test('shows the sign-in card', async ({ app, agent }) => {
+  await app.open('/sign-in-card');
+  await agent.assert('the sign-in card is shown');
+});
+
 test('fails after the agent acted', async ({ app, agent, screen }) => {
   await app.open();
   await agent.act('increment the counter once');
@@ -78,6 +89,23 @@ const EXECUTOR_MODULE = `export const tapper = {
  */
 function judge(call: FakeCall): unknown {
   if (call.schemaName !== 'agent-codegen-checks-1') throw new Error(`unexpected ${call.schemaName}`);
+  if (call.instruction.includes('replaced')) {
+    const earlier = /^(p\d+) button "Increment"/mu.exec(call.prompt)?.[1] ?? null;
+    return { checks: [{ kind: 'gone', node: earlier, text: null, covers: 'the Increment button was replaced' }], uncovered: ['nothing is broken'] };
+  }
+  if (call.instruction.includes('sign-in card')) {
+    // The title reads "Login" like the button does: a script can find only the button by it.
+    const title = call.lines.find((candidate) => /text="Login"/u.test(candidate) && !/button/u.test(candidate)) ?? '';
+    const button = call.lines.find((candidate) => /button "Login"/u.test(candidate)) ?? '';
+    const idOf = (line: string): string | null => /#(\S+)/u.exec(line)?.[1] ?? null;
+    return {
+      checks: [
+        { kind: 'visible', node: idOf(title), text: null, covers: 'the sign-in card is shown' },
+        { kind: 'visible', node: idOf(button), text: null, covers: 'the sign-in card is shown' },
+      ],
+      uncovered: [],
+    };
+  }
   if (call.instruction.includes('is gone')) {
     const earlier = /^(p\d+) button "Increment"/mu.exec(call.prompt)?.[1] ?? null;
     const field = /^(p\d+) textbox "Email"/mu.exec(call.prompt)?.[1] ?? null;
@@ -203,10 +231,43 @@ describe('--codegen on the in-process transport', () => {
       instruction: 'the Increment button is gone and nothing is broken',
       uncovered: ['nothing is broken'],
     };
-    expect(outcome.report.run.codegen).toEqual({ dir: '.e2e/codegen', files: [SPEC.split(path.sep).join('/')], gaps: [gap] });
+    const replacedHeader = lines.findIndex((line) => line.trim() === '// agent.assert: the Increment button was replaced, and nothing is broken');
+    const replaced = {
+      ...gap,
+      line: replacedHeader + 1,
+      test: 'remembers what a screen step went through',
+      instruction: 'the Increment button was replaced, and nothing is broken',
+    };
+    expect(outcome.report.run.codegen).toEqual({ dir: '.e2e/codegen', files: [SPEC.split(path.sep).join('/')], gaps: [gap, replaced] });
     expect(warnings).toEqual([
-      `--codegen: 1 judgment was only partly converted (${gap.file}:${String(gap.line)})`,
+      `--codegen: 2 judgments were only partly converted (${gap.file}:${String(gap.line)}, ${replaced.file}:${String(replaced.line)})`,
     ]);
+  });
+
+  it('counts a screen a screen step went through as an earlier screen', () => {
+    expect(resultByTitle(outcome, 'remembers what a screen step went through').status).toBe('passed');
+    const code = readFileSync(path.join(project.dir, SPEC), 'utf8');
+    expect(code).toContain(
+      [
+        '  // agent.assert: the Increment button was replaced, and nothing is broken',
+        '  // NOTE: the checks below prove only part of this judgment.',
+        "  //   The judge's explanation of its verdict (its reasoning, not a checked fact): judged",
+        '  //   Not checked: nothing is broken',
+        '  await expect(page.getByRole("button", { name: "Increment", exact: true })).toHaveCount(0);',
+      ].join('\n'),
+    );
+  });
+
+  it('keeps a check only on a node the code finds alone, saying why it dropped the other', () => {
+    expect(resultByTitle(outcome, 'shows the sign-in card').status).toBe('passed');
+    const code = readFileSync(path.join(project.dir, SPEC), 'utf8');
+    expect(code).toContain(
+      [
+        '  // agent.assert: the sign-in card is shown',
+        '  await expect(page.getByRole("button", { name: "Login", exact: true })).toBeVisible();',
+      ].join('\n'),
+    );
+    expect(code).not.toContain('getByText("Login"');
   });
 
   it('keeps a failing test, whose agent call recorded nothing, throwing where the call was', () => {
@@ -227,7 +288,7 @@ describe('--codegen on the in-process transport', () => {
     const replayed = await runExisting(project, {
       appUrl: app.url,
       config: { tests: 'tests/**/*.e2e.ts', agents: { default: { executor, model } } },
-      runOptions: { codegen: true, grep: [/increments through the agent|leaves the counter behind/] },
+      runOptions: { codegen: true, grep: [/increments through the agent|leaves the counter behind|remembers what a screen step|shows the sign-in card/] },
     });
     expect(resultByTitle(replayed, 'increments through the agent').status).toBe('passed');
     const step = resultByTitle(replayed, 'increments through the agent').attempts[0]!.steps.find((candidate) => candidate.api === 'agent.act');

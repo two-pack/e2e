@@ -17,7 +17,7 @@
 
 import { readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { describeTarget, type RecordableAction } from '../agent/actions.ts';
+import { containerKey, describeTarget, type RecordableAction } from '../agent/actions.ts';
 import { TraceRecorder } from '../cache/recorder.ts';
 import { bound, MAX_TRACE_DESCRIPTOR_CHARS, type DerivedReason, type RecordedAction } from '../cache/trace.ts';
 import type { AgentObservation, RedactedNode } from '../agent/observation.ts';
@@ -31,9 +31,11 @@ import type {
   CodegenFile,
   CodegenJudgment,
   CodegenRecording,
+  CodegenScreenNode,
   CodegenStep,
   CodegenTargetDescriptor,
   CodegenTest,
+  EngineCodegen,
 } from '../engine/codegen.ts';
 import type { StandardReading } from '../engine/contract.ts';
 import { writeTextReport } from '../report/write.ts';
@@ -167,15 +169,20 @@ export class SeenScreens {
   /**
    * The elements earlier screens showed that `observation` does not, at most
    * `limit`: the newest screen's first, in the order that screen listed them.
+   * `shown` says whether the code would still find one on it.
    */
-  goneFrom(observation: Extract<AgentObservation, { kind: 'semantic' }>, limit: number): CodegenTargetDescriptor[] {
+  goneFrom(
+    observation: Extract<AgentObservation, { kind: 'semantic' }>,
+    limit: number,
+    shown: (target: CodegenTargetDescriptor) => boolean = () => false,
+  ): CodegenTargetDescriptor[] {
     const ordered = [...this.elements.values()]
       .map((entry, index) => ({ ...entry, index }))
       .toSorted((a, b) => b.screen - a.screen || a.index - b.index);
     const gone: CodegenTargetDescriptor[] = [];
     for (const { target } of ordered) {
       if (gone.length >= limit) break;
-      if (!stillShown(target, observation)) gone.push(target);
+      if (!stillShown(target, observation) && !shown(target)) gone.push(target);
     }
     return gone;
   }
@@ -238,6 +245,36 @@ function squashed(text: string): string {
   return text.replaceAll(/\s+/gu, '');
 }
 
+/** Each screen as `locate` reads it, built once per observation. */
+const screens = new WeakMap<ReadonlyMap<string, RedactedNode>, readonly CodegenScreenNode[]>();
+
+/** A screen's nodes as the engine's `locate` reads them: what code could find each by. */
+function screenOf(observation: Extract<AgentObservation, { kind: 'semantic' }>): readonly CodegenScreenNode[] {
+  const cached = screens.get(observation.nodes);
+  if (cached !== undefined) return cached;
+  const read = [...observation.nodes].map(([id, node]): CodegenScreenNode => {
+    const parent = observation.parents.get(id);
+    const within = containerKey(id, observation.nodes, observation.parents);
+    const placeholder = node.attributes?.['placeholder'];
+    // A leaf whose text the tree folded into its name shows that name.
+    const shownText = displayedTextOf(node) || ((node.children ?? []).length === 0 ? collapseText(node.name ?? '') : '');
+    return {
+      id,
+      ...(parent === undefined ? {} : { parent }),
+      ...(node.role === undefined ? {} : { role: node.role }),
+      ...(node.name === undefined ? {} : { name: collapseText(node.name) }),
+      shownText,
+      ...(node.testId === undefined ? {} : { testId: collapseText(node.testId) }),
+      ...(placeholder === undefined ? {} : { placeholder: collapseText(placeholder) }),
+      ...(node.standard === undefined ? {} : { standard: node.standard }),
+      ...(within === undefined ? {} : { within }),
+      ...(node.states?.hidden === true ? { hidden: true } : {}),
+    };
+  });
+  screens.set(observation.nodes, read);
+  return read;
+}
+
 /** The recording of one attempt's `agent.act` steps. */
 export class CodegenLog {
   private readonly steps = new Map<
@@ -248,7 +285,24 @@ export class CodegenLog {
   /** What the attempt's screens showed, oldest first. */
   readonly seen = new SeenScreens();
 
-  constructor(readonly attemptId: string) {}
+  constructor(
+    readonly attemptId: string,
+    private readonly engine?: Pick<EngineCodegen, 'locate'>,
+  ) {}
+
+  /**
+   * The nodes of a screen the target engine's code would find `target` by,
+   * by id; undefined when the engine cannot tell or writes no code.
+   */
+  locate(target: CodegenTargetDescriptor, observation: Extract<AgentObservation, { kind: 'semantic' }>): readonly string[] | undefined {
+    if (this.engine?.locate === undefined) return undefined;
+    try {
+      return this.engine.locate(target, screenOf(observation));
+    } catch {
+      // An engine that cannot read the screen leaves the check as the tree confirmed it.
+      return undefined;
+    }
+  }
 
   /**
    * Opens one step's recording. `redact` and `redactCut` are the attempt's

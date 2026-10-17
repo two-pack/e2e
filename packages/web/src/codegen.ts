@@ -12,7 +12,7 @@
 
 import type { CodegenFile, CodegenRendered, CodegenStep, CodegenTest, EngineCodegen } from 'e2e/engine';
 import { convertSource } from './codegen-source.ts';
-import { gapComments, gapMarker, literal, oneLine, PLAYWRIGHT_TEST_ID_ATTRIBUTE, StatementWriter, takeGapLines } from './codegen-statements.ts';
+import { gapComments, gapMarker, literal, locateOnScreen, oneLine, PLAYWRIGHT_TEST_ID_ATTRIBUTE, StatementWriter, takeGapLines } from './codegen-statements.ts';
 
 /** e2e's default judgment timeout, the deadline a `waitFor` check retries until in the fallback. */
 const DEFAULT_JUDGMENT_TIMEOUT = '30_000';
@@ -23,6 +23,7 @@ export function playwrightCodegen(testIdAttribute: string | undefined): EngineCo
   return {
     extension: '.spec.ts',
     render: (file) => convertSource(file, attribute) ?? renderSteps(file, attribute),
+    locate: locateOnScreen,
   };
 }
 

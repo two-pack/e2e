@@ -6,6 +6,7 @@ import type { AgentContext, AgentSelection } from '../agent/invocation.ts';
 import type { ExecutorAttempt, StepExecutor } from '../agent/executor.ts';
 import type { AgentCacheContext } from '../cache/context.ts';
 import type { CodegenLog } from './codegen.ts';
+import { seeScreenForCodegen } from '../agent/codegen-checks.ts';
 import type { WorkerModels } from './worker-models.ts';
 import type { EngineCapability, EngineFixtureContext } from '../engine/index.ts';
 import type { OperationContext, TargetSession } from '../engine/surface.ts';
@@ -211,6 +212,12 @@ export function createFixtures(environment: AttemptEnvironment): AttemptFixtures
     ...(environment.codegen !== undefined ? { codegen: environment.codegen } : {}),
     ...(environment.debug !== undefined ? { debug: environment.debug } : {}),
   };
+
+  // An agent step looks at the screen itself; every other step's screen is
+  // looked at once it passed, so a judgment knows what the test went through.
+  if (environment.codegen !== undefined) {
+    environment.steps.afterPassedSteps((step) => (step.kind === 'agent' || step.kind === 'session' || step.kind === 'resource' ? Promise.resolve() : seeScreenForCodegen(agentRuntime)));
+  }
 
   const fixtures: TestFixtures & { session: SetupSession } = {
     get agent(): Agent {

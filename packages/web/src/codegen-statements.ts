@@ -6,7 +6,7 @@
  * step-list fallback (`codegen.ts`).
  */
 
-import type { CodegenAction, CodegenCheck, CodegenJudgmentGap, CodegenTargetDescriptor } from 'e2e/engine';
+import type { CodegenAction, CodegenCheck, CodegenJudgmentGap, CodegenScreenNode, CodegenTargetDescriptor } from 'e2e/engine';
 
 /** The roles `page.getByRole` takes that the engine's tree also reports; anything else falls back to text or selector. */
 const ARIA_ROLES: ReadonlySet<string> = new Set([
@@ -316,6 +316,70 @@ export function takeGapLines(code: string): { readonly code: string; readonly li
     }),
   );
   return { code: written.join('\n'), lines };
+}
+
+/**
+ * The nodes of a screen the locator `StatementWriter.locator` writes for
+ * `target` finds, in document order, read the way Playwright matches: the
+ * same branch, the same field, exact. Undefined for a locator the screen
+ * cannot answer for (a structural selector, the focused element).
+ */
+export function locateOnScreen(target: CodegenTargetDescriptor, screen: readonly CodegenScreenNode[]): readonly string[] | undefined {
+  const scoped = target.within === undefined ? screen : screen.filter((node) => node.within === target.within);
+  const visible = scoped.filter((node) => node.hidden !== true);
+  const role = ariaRole(target.role);
+  const standardName = (node: CodegenScreenNode): string => node.standard?.name ?? node.name ?? '';
+  const ids = (nodes: readonly CodegenScreenNode[]): string[] => nodes.map((node) => node.id);
+  if (target.testId !== undefined) return ids(scoped.filter((node) => node.testId === target.testId));
+  if (target.standard?.role === null) {
+    const name = target.standard.name ?? target.name;
+    // A label names the field it labels, whatever its role.
+    return name === undefined || name === '' ? undefined : ids(visible.filter((node) => standardName(node) === name));
+  }
+  if (role !== undefined && CONTENT_NAMED_ROLES.has(role) && target.shownText !== undefined) {
+    const shown = squash(target.shownText);
+    return ids(visible.filter((node) => ariaRole(node.role) === role && wholeTextMatches(squash(node.shownText), shown)));
+  }
+  if (role !== undefined && target.name !== undefined && target.standard?.name !== undefined && isGlyphsOnly(target.standard.name)) {
+    return ids(visible.filter((node) => node.name === target.name));
+  }
+  if (role !== undefined && target.name !== undefined) {
+    const name = target.standard?.name ?? target.name;
+    return ids(visible.filter((node) => ariaRole(node.role) === role && (name === '' || standardName(node) === name)));
+  }
+  if (target.role === 'iframe' && target.name !== undefined) return ids(scoped.filter((node) => node.role === 'iframe' && node.name === target.name));
+  if (target.placeholder !== undefined) return ids(scoped.filter((node) => node.placeholder === target.placeholder));
+  if (target.selector !== undefined) return undefined;
+  const text = target.name ?? target.text;
+  if (text !== undefined) return ids(innermost(scoped.filter((node) => node.shownText === text), screen));
+  if (role !== undefined) return ids(visible.filter((node) => ariaRole(node.role) === role));
+  return undefined;
+}
+
+/** A text with its whitespace removed, as a whole-text pattern with optional whitespace compares it. */
+function squash(text: string): string {
+  return text.replaceAll(/\s+/gu, '');
+}
+
+/** Whether a node's text is the whole of `shown`, a cut `shown` (ending in `…`) as its prefix. */
+function wholeTextMatches(text: string, shown: string): boolean {
+  return shown.endsWith('…') ? text.startsWith(shown.slice(0, -1)) : text === shown;
+}
+
+/**
+ * The matches no other match sits inside: `getByText` finds the element
+ * holding the text, not every ancestor whose text is the same text.
+ */
+function innermost(matches: readonly CodegenScreenNode[], screen: readonly CodegenScreenNode[]): CodegenScreenNode[] {
+  const parents = new Map(screen.map((node) => [node.id, node.parent]));
+  const matched = new Set(matches.map((node) => node.id));
+  const holders = new Set<string>();
+  for (const node of matches) {
+    for (let cursor = parents.get(node.id); cursor !== undefined; cursor = parents.get(cursor)) {
+      if (matched.has(cursor)) holders.add(cursor);
+    }
+  }
+  return matches.filter((node) => !holders.has(node.id));
 }
 
 /** Icon-font glyphs: private-use code points, which render as a picture and read as no word. */

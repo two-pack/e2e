@@ -81,7 +81,7 @@ describe('defineEngine', () => {
     expect(() => withActions([1])).toThrow(/unknown kind 1/);
   });
 
-  it('takes a codegen declaration of an extension and a render function, and nothing else', () => {
+  it('takes a codegen declaration of an extension, a render function, and an optional locate, and nothing else', () => {
     const render = (file: { readonly file: string }): { code: string; gaps: [] } => ({ code: `// ${file.file}`, gaps: [] });
     const handle = defineEngine(observingEngine({ codegen: { extension: '.spec.ts', render } }));
     expect(handle.codegen?.extension).toBe('.spec.ts');
@@ -97,7 +97,12 @@ describe('defineEngine', () => {
       /codegen.render must be a function/,
     );
     expect(() => defineEngine(observingEngine({ codegen: { extension: '.ts', render, language: 'ts' } as never }))).toThrow(
-      /codegen has unknown key "language"; expected one of extension, render/,
+      /codegen has unknown key "language"; expected one of extension, render, locate/,
+    );
+    const located = defineEngine(observingEngine({ codegen: { extension: '.ts', render, locate: () => ['n1'] } }));
+    expect(located.codegen?.locate?.({ role: 'button' }, [])).toEqual(['n1']);
+    expect(() => defineEngine(observingEngine({ codegen: { extension: '.ts', render, locate: 'n1' } as never }))).toThrow(
+      /codegen.locate must be a function/,
     );
   });
 

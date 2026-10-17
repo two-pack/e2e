@@ -973,7 +973,7 @@ export class TargetExecutor implements SerialHost {
     // A serial member's steps live on its group, which `--codegen` leaves out,
     // and a test registered in memory has no file to write code beside.
     const codegen =
-      this.config.codegen === true && inMemory === undefined && shared === undefined ? new CodegenLog(attemptId) : undefined;
+      this.config.codegen === true && inMemory === undefined && shared === undefined ? new CodegenLog(attemptId, this.target.engine?.codegen) : undefined;
     if (codegen !== undefined) this.codegenLogs.set(attemptId, codegen);
 
     // A rejection nobody caught, handed in by the process while this attempt
