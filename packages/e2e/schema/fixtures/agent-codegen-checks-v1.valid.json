@@ -1,7 +1,34 @@
 {
   "checks": [
-    { "kind": "text", "node": "n12", "text": "Saved profile for Ada Lovelace" },
-    { "kind": "checked", "node": "n7", "text": null },
-    { "kind": "url", "node": null, "text": "/dashboard" }
+    {
+      "kind": "text",
+      "node": "n12",
+      "text": "Saved profile for Ada Lovelace"
+    },
+    {
+      "kind": "checked",
+      "node": "n7",
+      "text": null
+    },
+    {
+      "kind": "count",
+      "node": "n20",
+      "text": "3"
+    },
+    {
+      "kind": "order",
+      "node": "n20",
+      "text": null
+    },
+    {
+      "kind": "value",
+      "node": "n4",
+      "text": ""
+    },
+    {
+      "kind": "url",
+      "node": null,
+      "text": "/dashboard"
+    }
   ]
 }

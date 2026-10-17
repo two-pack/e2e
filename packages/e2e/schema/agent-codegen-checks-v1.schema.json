@@ -5,7 +5,9 @@
   "description": "What the judge answers, in an e2e run --codegen, when asked which facts on the screen a passed judgment rested on. The runner keeps only the checks the same observation bears out.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["checks"],
+  "required": [
+    "checks"
+  ],
   "properties": {
     "checks": {
       "type": "array",
@@ -13,13 +15,41 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["kind", "node", "text"],
+        "required": [
+          "kind",
+          "node",
+          "text"
+        ],
         "properties": {
           "kind": {
-            "enum": ["visible", "text", "value", "checked", "unchecked", "enabled", "disabled", "absent", "url"]
+            "enum": [
+              "visible",
+              "text",
+              "value",
+              "checked",
+              "unchecked",
+              "enabled",
+              "disabled",
+              "count",
+              "order",
+              "absent",
+              "url"
+            ]
           },
-          "node": { "type": ["string", "null"], "maxLength": 32 },
-          "text": { "type": ["string", "null"], "maxLength": 200 }
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 32
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200
+          }
         }
       }
     }

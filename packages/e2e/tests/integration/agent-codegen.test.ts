@@ -70,8 +70,18 @@ function judge(call: FakeCall): unknown {
   if (call.schemaName !== 'agent-codegen-checks-1') throw new Error(`unexpected ${call.schemaName}`);
   const line = call.lines.find((candidate) => /status "Counter"/u.test(candidate)) ?? '';
   const id = /#(\S+)/u.exec(line)?.[1] ?? null;
-  return { checks: [{ kind: 'text', node: id, text: '1' }, { kind: 'visible', node: 'n9999', text: null }] };
+  return {
+    checks: [
+      { kind: 'text', node: id, text: '1' },
+      { kind: 'count', node: id, text: '1' },
+      { kind: 'visible', node: 'n9999', text: null },
+      { kind: 'absent', node: null, text: 'Error' },
+    ],
+  };
 }
+
+/** The counter as the generated code finds it: by the name its author gave it, or by what it shows. */
+const COUNTER = 'page.getByRole("status", { name: named("Counter") }).or(page.getByRole("status").filter({ hasText: /^\\s*Counter\\s*$/u }))';
 
 const HELPER = fileURLToPath(new URL('../helpers/fake-model.ts', import.meta.url));
 
@@ -118,14 +128,16 @@ describe('--codegen on the in-process transport', () => {
         "  test('increments through the agent', async ({ page }) => {",
         '    await page.goto("/");',
         '    // agent.act: increment the counter once',
-        '    await page.getByRole("button", { name: "Increment", exact: true }).click();',
+        '    await page.getByRole("button", { name: named("Increment") }).click();',
         '    // agent.assert: the counter shows 1',
-        '    await expect(page.getByRole("status", { name: "Counter", exact: true })).toContainText("1");',
+        `    await expect(${COUNTER}).toContainText("1");`,
+        '    await expect(page.getByRole("status")).toHaveCount(1);',
         "    await expect(page.getByRole('status')).toHaveText('1');",
       ].join('\n'),
     );
-    // The proposed node the screen never showed is dropped, not written.
+    // A node the screen never showed, and a word the assertion never said was missing, are dropped, not written.
     expect(code).not.toContain('toBeVisible');
+    expect(code).not.toContain('Error"');
   });
 
   it('keeps a failing test, whose agent call recorded nothing, throwing where the call was', () => {
@@ -207,7 +219,7 @@ export default {
     expect(existsSync(nested)).toBe(true);
     const code = readFileSync(nested, 'utf8');
     expect(code).toContain("test.describe('counter again', () => {");
-    expect(code).toContain('await page.getByRole("button", { name: "Increment", exact: true }).click();');
-    expect(code).toContain('await expect(page.getByRole("status", { name: "Counter", exact: true })).toContainText("1");');
+    expect(code).toContain('await page.getByRole("button", { name: named("Increment") }).click();');
+    expect(code).toContain(`await expect(${COUNTER}).toContainText("1");`);
   });
 });

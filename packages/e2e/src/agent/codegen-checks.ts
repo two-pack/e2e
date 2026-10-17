@@ -18,10 +18,11 @@
 
 import { describeTarget, containerKey } from './actions.ts';
 import { Invocation, type AgentContext } from './invocation.ts';
-import type { AgentObservation } from './observation.ts';
+import type { AgentObservation, RedactedNode } from './observation.ts';
 import { isRelocatableDescriptor, describePosition } from '../cache/relocate.ts';
 import type { TraceTargetDescriptor } from '../cache/trace.ts';
-import type { CodegenCheck } from '../engine/codegen.ts';
+import type { CodegenCheck, CodegenTargetDescriptor } from '../engine/codegen.ts';
+import { shownTextOf } from '../run/codegen.ts';
 import { collapseText } from '../internal/text.ts';
 import { CHECKS_SCHEMA, CHECKS_SCHEMA_NAME, MAX_CHECKS, validateChecksResponse, type ProposedCheck } from './protocol.ts';
 
@@ -33,7 +34,10 @@ const CHECKS_REQUEST = [
   `List the fewest checks, at most ${String(MAX_CHECKS)}, that together prove it, each a fact the observation shows right now:`,
   '- "visible": node is on screen. "text": node\'s text or name contains text. "value": the field node holds exactly text.',
   '- "checked", "unchecked", "enabled", "disabled": node is in that state.',
-  '- "absent": no node on screen shows text. "url": the location is exactly text, as the observation reports it.',
+  '- "count": exactly text (a number) nodes with node\'s role are on screen. "order": the nodes with node\'s role appear in the order the screen shows them.',
+  '- "absent": no node on screen shows text; only for words the instruction itself says are missing, gone, or not shown.',
+  '- "url": the location is exactly text, as the observation reports it.',
+  'Cover every part of the instruction: a number of items is a "count", an order is an "order", an empty field is a "value" with text "".',
   'node is the id of a node in the observation, such as "n12", or null for "absent" and "url". text is null where the kind takes none.',
   'Prefer a node with a role and a name, and the shortest text that still proves the point. Never invent a node or a text the observation does not show.',
   'Respond with { "checks": [{ "kind": <kind>, "node": <id or null>, "text": <text or null> }] }.',
@@ -100,7 +104,7 @@ async function deriveCodegenChecks(runtime: AgentContext, request: CodegenChecks
       prompt: { request: CHECKS_REQUEST, instruction, observation },
     });
     const checks = proposed.flatMap((check) => {
-      const confirmed = confirmCheck(check, observation, runtime.redact);
+      const confirmed = confirmCheck(check, observation, request.instruction, runtime.redact);
       return confirmed === undefined ? [] : [confirmed];
     });
     return dedupe(checks);
@@ -120,10 +124,12 @@ async function deriveCodegenChecks(runtime: AgentContext, request: CodegenChecks
 function confirmCheck(
   check: ProposedCheck,
   observation: Extract<AgentObservation, { kind: 'semantic' }>,
+  instruction: string,
   redact: (text: string) => string,
 ): CodegenCheck | undefined {
   const text = check.text === null ? undefined : collapseText(check.text);
-  if (text !== undefined && (text === '' || redact(text) !== text)) return undefined;
+  // Only a field can be shown to be empty; any other check needs something to look for.
+  if (text !== undefined && ((text === '' && check.kind !== 'value') || redact(text) !== text)) return undefined;
   switch (check.kind) {
     case 'url': {
       // The observation shows the model the path; the check keeps the whole
@@ -132,7 +138,9 @@ function confirmCheck(
       return text !== undefined && location !== undefined && (text === path || text === location) ? { kind: 'url', location } : undefined;
     }
     case 'absent': {
-      if (text === undefined) return undefined;
+      // A word the screen never showed proves nothing by being absent: the
+      // check counts only for what the instruction itself says is missing.
+      if (text === undefined || !collapseText(instruction).includes(text)) return undefined;
       const shown = [...observation.nodes.values()].some((node) => readsOf(node).some((read) => read.includes(text)));
       return shown ? undefined : { kind: 'absent', text };
     }
@@ -141,16 +149,18 @@ function confirmCheck(
   }
   const node = check.node === null ? undefined : observation.nodes.get(check.node.replace(/^#/u, ''));
   if (node === undefined) return undefined;
-  const target = durableTarget(node.ref.id, observation);
+  if (check.kind === 'count' || check.kind === 'order') return confirmCollection(check.kind, node, text, observation, redact);
+  const target = durableTarget(node.ref.id, observation, redact);
   if (target === undefined) return undefined;
   const states = node.states ?? {};
   switch (check.kind) {
     case 'visible':
       return { kind: 'visible', target };
     case 'text':
-      return text !== undefined && readsOf(node).some((read) => read.includes(text)) ? { kind: 'text', target, text } : undefined;
+      // A script reads the text on screen, not a name an author or the engine gave the node.
+      return text !== undefined && shownReadsOf(node, redact).some((read) => read.includes(text)) ? { kind: 'text', target, text } : undefined;
     case 'value':
-      return text !== undefined && node.value !== undefined && collapseText(node.value) === text ? { kind: 'value', target, value: text } : undefined;
+      return text !== undefined && collapseText(node.value ?? '') === text ? { kind: 'value', target, value: text } : undefined;
     case 'checked':
     case 'unchecked': {
       const checked = check.kind === 'checked';
@@ -164,13 +174,54 @@ function confirmCheck(
   }
 }
 
+/** Most items an `order` check lists: past it a list is data, not the point of a check. */
+const MAX_ORDER_ITEMS = 20;
+
+/**
+ * A check over every node on screen with `node`'s role: how many there are
+ * (`count`, which the observation must show exactly), or what each reads, in
+ * document order (`order`), each as the text a script would see.
+ */
+function confirmCollection(
+  kind: 'count' | 'order',
+  node: RedactedNode,
+  text: string | undefined,
+  observation: Extract<AgentObservation, { kind: 'semantic' }>,
+  redact: (text: string) => string,
+): CodegenCheck | undefined {
+  const role = node.role;
+  if (role === undefined) return undefined;
+  const items = [...observation.nodes.values()].filter((candidate) => candidate.role === role && candidate.states?.hidden !== true);
+  if (kind === 'count') {
+    if (text === undefined || !/^\d+$/u.test(text) || Number(text) !== items.length) return undefined;
+    return { kind: 'count', role, count: items.length };
+  }
+  if (items.length < 2 || items.length > MAX_ORDER_ITEMS) return undefined;
+  const texts = items.map((item) => shownTextOf(item, redact) ?? collapseText(item.text ?? item.name ?? ''));
+  return texts.every((item) => item !== '' && redact(item) === item) ? { kind: 'order', role, texts } : undefined;
+}
+
+/**
+ * The texts a node shows as a script reads them, whitespace collapsed: its
+ * own text, what its descendants show, its value, and its name only when
+ * nothing else does (a leaf named by its own content).
+ */
+function shownReadsOf(node: RedactedNode, redact: (text: string) => string): string[] {
+  const shown = [node.text, shownTextOf(node, redact), node.value].filter((read): read is string => read !== undefined && read.trim() !== '');
+  return (shown.length > 0 ? shown : [node.name ?? '']).map(collapseText);
+}
+
 /** The texts a node reads as, whitespace collapsed: its name, text, and value. */
 function readsOf(node: { readonly name?: string; readonly text?: string; readonly value?: string }): string[] {
   return [node.name, node.text, node.value].filter((read): read is string => read !== undefined).map(collapseText);
 }
 
-/** A node's descriptor as an action on it would record it, or undefined when nothing durable names it. */
-function durableTarget(id: string, observation: Extract<AgentObservation, { kind: 'semantic' }>): TraceTargetDescriptor | undefined {
+/** A node's descriptor as an action on it would record it, with what it shows, or undefined when nothing durable names it. */
+function durableTarget(
+  id: string,
+  observation: Extract<AgentObservation, { kind: 'semantic' }>,
+  redact: (text: string) => string,
+): CodegenTargetDescriptor | undefined {
   const node = observation.nodes.get(id);
   if (node === undefined) return undefined;
   const described = describeTarget(node);
@@ -182,7 +233,9 @@ function durableTarget(id: string, observation: Extract<AgentObservation, { kind
     ...(within === undefined ? {} : { within }),
     ...(position === undefined ? {} : { position }),
   };
-  return isRelocatableDescriptor(descriptor) ? descriptor : undefined;
+  if (!isRelocatableDescriptor(descriptor)) return undefined;
+  const shownText = shownTextOf(node, redact);
+  return shownText === undefined ? descriptor : { ...descriptor, shownText };
 }
 
 /** The checks in order, each once. */

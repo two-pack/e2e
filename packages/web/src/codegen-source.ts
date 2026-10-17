@@ -432,10 +432,16 @@ class SourceConverter {
   private replaceSite(site: AgentSite): void {
     const step = this.stepFor(site);
     const args = (site.call['arguments'] as AstNode[] | undefined) ?? [];
-    // The instruction as it ran: a template's value is in the recorded label, not the source.
-    const instruction = args[0] === undefined ? '' : (stringValue(args[0]) ?? step?.label ?? this.source.slice(args[0].start, args[0].end));
-    const header = `// ${site.api}: ${oneLine(instruction)}`;
-    const missing = (why: string): string => `throw new Error(${literal(`${site.api}(${JSON.stringify(oneLine(instruction))}) ${why}`)});`;
+    // The instruction as it ran: a template's or a variable's value is in the
+    // recorded label. With no recording the value exists only when the test
+    // runs, so the error reads it then, from the expression the test passed.
+    const instruction = args[0] === undefined ? '' : (stringValue(args[0]) ?? step?.label);
+    const expression = args[0] === undefined ? '""' : this.source.slice(args[0].start, args[0].end);
+    const header = instruction === undefined ? `// ${site.api}(${oneLine(expression)})` : `// ${site.api}: ${oneLine(instruction)}`;
+    const missing = (why: string): string =>
+      instruction === undefined
+        ? `throw new Error(\`${site.api}(\${JSON.stringify(${expression})}) ${why}\`);`
+        : `throw new Error(${literal(`${site.api}(${JSON.stringify(oneLine(instruction))}) ${why}`)});`;
     let lines: string[];
     let value = 'undefined';
     if (step === undefined) {

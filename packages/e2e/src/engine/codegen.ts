@@ -9,11 +9,26 @@
 
 import type { RecordedAction, TraceTargetDescriptor } from '../cache/trace.ts';
 
-/** One grammar action an agent step committed, with the durable descriptor of its node. */
+/**
+ * One grammar action an agent step committed, with the durable descriptor of
+ * its node; a node's descriptor may carry `shownText` (`CodegenTargetDescriptor`).
+ */
 export type CodegenAction = RecordedAction;
 
-/** How a recorded action addressed its node: role and name, test id, text, and the rest. */
-export type CodegenTargetDescriptor = TraceTargetDescriptor;
+/**
+ * How a recorded action or check addressed its node: the replay cache's
+ * descriptor (role and name, test id, text, and the rest), plus what the node
+ * shows on screen when that differs from its name.
+ */
+export interface CodegenTargetDescriptor extends TraceTargetDescriptor {
+  /**
+   * The text the node and its descendants show, joined in order, when it
+   * differs from the node's name: a list row the engine names from its
+   * children's names (a button's label among them) shows their text instead.
+   * Bounded and redacted like the other fields.
+   */
+  readonly shownText?: string;
+}
 
 /** What one `agent.act` step did, as recorded while it ran. */
 export interface CodegenRecording {
@@ -45,6 +60,10 @@ export type CodegenCheck =
   | { readonly kind: 'value'; readonly target: CodegenTargetDescriptor; readonly value: string }
   | { readonly kind: 'checked'; readonly target: CodegenTargetDescriptor; readonly checked: boolean }
   | { readonly kind: 'enabled'; readonly target: CodegenTargetDescriptor; readonly enabled: boolean }
+  /** Exactly `count` nodes with the role are on screen. */
+  | { readonly kind: 'count'; readonly role: string; readonly count: number }
+  /** The nodes with the role show these texts, in this order (others may sit between them). */
+  | { readonly kind: 'order'; readonly role: string; readonly texts: readonly string[] }
   /** No node on screen shows `text`. */
   | { readonly kind: 'absent'; readonly text: string }
   /** The surface's location, path and query on the app's own origin, else whole. */

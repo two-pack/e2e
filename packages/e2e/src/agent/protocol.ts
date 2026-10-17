@@ -175,7 +175,7 @@ const MAX_CHECK_TEXT = 200;
 /** Longest node id a check names. */
 const MAX_CHECK_NODE = 32;
 
-const CHECK_KINDS = ['visible', 'text', 'value', 'checked', 'unchecked', 'enabled', 'disabled', 'absent', 'url'] as const;
+const CHECK_KINDS = ['visible', 'text', 'value', 'checked', 'unchecked', 'enabled', 'disabled', 'count', 'order', 'absent', 'url'] as const;
 
 type CheckKind = (typeof CHECK_KINDS)[number];
 

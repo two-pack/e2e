@@ -20,6 +20,18 @@ const ARIA_ROLES: ReadonlySet<string> = new Set([
   'tablist', 'tabpanel', 'term', 'textbox', 'time', 'timer', 'toolbar', 'tooltip', 'tree', 'treegrid', 'treeitem',
 ]);
 
+/** e2e's role names where ARIA, and so `getByRole`, spells the role another way. */
+const PLAYWRIGHT_ROLES: Readonly<Record<string, string>> = { image: 'img' };
+
+/**
+ * Roles e2e names from their content so the model reads a row or a message
+ * by what it says (`NAME_FROM_CONTENT_ROLES` in `in-page/read-semantics.ts`),
+ * where accname, and so Playwright's `getByRole`, leaves them unnamed unless
+ * the author named them. Such a node is found by either: the name an author
+ * gave it, or its text as the whole of what it shows.
+ */
+const CONTENT_NAMED_ROLES: ReadonlySet<string> = new Set(['listitem', 'status', 'alert']);
+
 /**
  * The containers a recorded `within` key names (`containerKey` in the runner:
  * row, list item, article, group, region, dialog, tab panel), as CSS. The key
@@ -39,12 +51,13 @@ export const PLAYWRIGHT_TEST_ID_ATTRIBUTE = 'data-testid';
 export interface FileNeeds {
   secrets: boolean;
   within: boolean;
+  named: boolean;
   testIdAttribute: boolean;
 }
 
 /** Writes statements for one file, noting the helpers they need. */
 export class StatementWriter {
-  readonly needs: FileNeeds = { secrets: false, within: false, testIdAttribute: false };
+  readonly needs: FileNeeds = { secrets: false, within: false, named: false, testIdAttribute: false };
 
   constructor(
     private readonly testIdAttribute: string,
@@ -138,15 +151,27 @@ export class StatementWriter {
       case 'visible':
         return `await expect(${this.locator(check.target)}).toBeVisible(${withOptions('')});`;
       case 'text':
-        return `await expect(${this.locator(check.target)}).toContainText(${withOptions(literal(check.text))});`;
+        return `await expect(${this.locator(check.target)}).toContainText(${withOptions(textMatcher(check.text))});`;
       case 'value':
         return `await expect(${this.locator(check.target)}).toHaveValue(${withOptions(literal(check.value))});`;
       case 'checked':
         return `await expect(${this.locator(check.target)})${check.checked ? '' : '.not'}.toBeChecked(${withOptions('')});`;
       case 'enabled':
         return `await expect(${this.locator(check.target)}).${check.enabled ? 'toBeEnabled' : 'toBeDisabled'}(${withOptions('')});`;
+      case 'count': {
+        const role = ariaRole(check.role);
+        return role === undefined
+          ? `// TODO: ${String(check.count)} ${oneLine(check.role)} nodes were on screen; ARIA has no such role to count.`
+          : `await expect(page.getByRole(${literal(role)})).toHaveCount(${withOptions(String(check.count))});`;
+      }
+      case 'order': {
+        const role = ariaRole(check.role);
+        return role === undefined
+          ? `// TODO: the ${oneLine(check.role)} nodes read ${oneLine(check.texts.join(', '))} in order; ARIA has no such role to list.`
+          : `await expect(page.getByRole(${literal(role)})).toContainText(${withOptions(`[${check.texts.map(textMatcher).join(', ')}]`)});`;
+      }
       case 'absent':
-        return `await expect(page.getByText(${literal(check.text)})).toHaveCount(${withOptions('0')});`;
+        return `await expect(page.getByText(${textMatcher(check.text)})).toHaveCount(${withOptions('0')});`;
       case 'url':
         return `await expect(page).toHaveURL(${withOptions(literal(this.relative(check.location)))});`;
     }
@@ -166,24 +191,42 @@ export class StatementWriter {
   locator(target: CodegenTargetDescriptor): string {
     if (target.within !== undefined) this.needs.within = true;
     const scope = target.within === undefined ? 'page' : `within(page, ${literal(target.within)})`;
+    const role = ariaRole(target.role);
     let base: string;
     if (target.testId !== undefined) {
       if (this.testIdAttribute !== PLAYWRIGHT_TEST_ID_ATTRIBUTE) this.needs.testIdAttribute = true;
       base = `${scope}.getByTestId(${literal(target.testId)})`;
-    } else if (target.role !== undefined && ARIA_ROLES.has(target.role) && target.name !== undefined) {
-      base = `${scope}.getByRole(${literal(target.role)}, { name: ${literal(target.name)}, exact: true })`;
+    } else if (role !== undefined && target.name !== undefined) {
+      const name = this.named(target.name);
+      base = `${scope}.getByRole(${literal(role)}, { name: ${name} })`;
+      // A name e2e reads where Playwright reads none: a row or a message by
+      // what it shows, an editor's host by its label.
+      if (CONTENT_NAMED_ROLES.has(role)) {
+        base = `${base}.or(${scope}.getByRole(${literal(role)}).filter({ hasText: ${wholeTextPattern(target.shownText ?? target.name)} }))`;
+      }
+      if (role === 'textbox') base = `${base}.or(${scope}.getByLabel(${name}))`;
+    } else if (target.role === 'iframe' && target.name !== undefined) {
+      // ARIA has no iframe role; a frame's name is its title, or a label an author gave it.
+      const name = JSON.stringify(target.name);
+      base = `${scope}.locator(${literal(`iframe[title=${name}], iframe[aria-label=${name}]`)})`;
     } else if (target.placeholder !== undefined) {
       base = `${scope}.getByPlaceholder(${literal(target.placeholder)}, { exact: true })`;
     } else if (target.selector !== undefined) {
       base = `${scope}.locator(${literal(target.selector)})`;
     } else if (target.name !== undefined || target.text !== undefined) {
       base = `${scope}.getByText(${literal((target.name ?? target.text)!)}, { exact: true })`;
-    } else if (target.role !== undefined && ARIA_ROLES.has(target.role)) {
-      base = `${scope}.getByRole(${literal(target.role)})`;
+    } else if (role !== undefined) {
+      base = `${scope}.getByRole(${literal(role)})`;
     } else {
       base = `${scope}.locator(":focus") /* TODO: the recording kept nothing to find this node by */`;
     }
     return target.position !== undefined && target.position.of > 1 ? `${base}.nth(${String(target.position.index)})` : base;
+  }
+
+  /** A `named(...)` call matching an accessible name the way e2e does; see `NAMED_HELPER`. */
+  private named(name: string): string {
+    this.needs.named = true;
+    return name.endsWith('…') ? `named(${literal(name.slice(0, -1))}, true)` : `named(${literal(name)})`;
   }
 
   /** A location on the app's own origin as a path the `baseURL` resolves; any other location whole. */
@@ -205,6 +248,7 @@ export class StatementWriter {
     return [
       ...(this.needs.testIdAttribute ? [`selectors.setTestIdAttribute(${literal(this.testIdAttribute)});`, ''] : []),
       ...(this.needs.secrets ? SECRET_HELPER : []),
+      ...(this.needs.named ? NAMED_HELPER : []),
       ...(this.needs.within ? WITHIN_HELPER : []),
     ];
   }
@@ -216,6 +260,41 @@ export class StatementWriter {
       ...(this.needs.within ? ['import type { Locator, Page } from "@playwright/test";'] : []),
     ];
   }
+}
+
+/** The role `getByRole` takes for an e2e role, or undefined when ARIA has none (`box`, `iframe`). */
+function ariaRole(role: string | undefined): string | undefined {
+  if (role === undefined) return undefined;
+  const mapped = PLAYWRIGHT_ROLES[role] ?? role;
+  return ARIA_ROLES.has(mapped) ? mapped : undefined;
+}
+
+/**
+ * What a text expectation compares against: the text as written when it is
+ * one word, else a pattern with the whitespace between its words optional.
+ * e2e joins the text of separate elements with a space; the elements' own
+ * text, which Playwright reads, may have none between them.
+ */
+function textMatcher(text: string): string {
+  const words = text.trim().split(/\s+/u);
+  return words.length < 2 ? literal(text) : `/${words.map(escapeRegExp).join('\\s*')}/u`;
+}
+
+/** A word escaped for a regular expression literal: its syntax characters and the slash. */
+function escapeRegExp(word: string): string {
+  return word.replaceAll(/[.*+?^${}()|[\]\\/]/gu, '\\$&');
+}
+
+/**
+ * A regular expression literal matching an element whose text is `name` and
+ * nothing more, as `filter({ hasText })` reads it: whitespace between the
+ * words optional, since e2e joins its parts with spaces the markup may not
+ * have. A name e2e cut at its limit (ending in `…`) matches as a prefix.
+ */
+function wholeTextPattern(name: string): string {
+  const cut = name.endsWith('…');
+  const words = (cut ? name.slice(0, -1) : name).trim().split(/\s+/u).map(escapeRegExp);
+  return `/^\\s*${words.join('\\s*')}${cut ? '' : '\\s*$'}/u`;
 }
 
 /** Reads a secret from the variable that overrides it in the e2e config; see `secretVariable`. */
@@ -238,6 +317,21 @@ const WITHIN_HELPER = [
   '/** The innermost row, list item, group, region, or dialog whose text includes `key`: where the agent found the element. */',
   'function within(page: Page, key: string): Locator {',
   `  return page.locator(${literal(CONTAINER_SELECTOR)}).filter({ hasText: key }).last();`,
+  '}',
+  '',
+];
+
+/**
+ * Matches an accessible name the way e2e's role queries do: the whole name,
+ * case-sensitive, with icon-font glyphs (private-use characters, which e2e
+ * drops from a name and Playwright keeps) allowed around its words. `prefix`
+ * matches a name e2e cut at its limit.
+ */
+const NAMED_HELPER = [
+  '/** An accessible name as e2e matches it: the whole name, with icon-font glyphs allowed around its words. */',
+  'function named(name: string, prefix = false): RegExp {',
+  '  const words = name.trim().split(/\\s+/u).map((word) => word.replace(/[.*+?^${}()|[\\]\\\\/]/gu, "\\\\$&"));',
+  '  return new RegExp(`^[\\\\s\\\\p{Co}]*${words.join("[\\\\s\\\\p{Co}]+")}${prefix ? "" : "[\\\\s\\\\p{Co}]*$"}`, "u");',
   '}',
   '',
 ];

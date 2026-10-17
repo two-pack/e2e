@@ -14,4 +14,7 @@ the run. The web engine converts the test to Playwright Test: `agent.act` as
 the recorded clicks and fills, judgments as `expect` calls (`waitFor`'s with
 its timeout), `extract` as the value it returned, and the rest of the e2e API
 in its Playwright spelling, control flow kept. Secret fills read their
-`E2E_USER_*`/`E2E_SECRET_*` variable.
+`E2E_USER_*`/`E2E_SECRET_*` variable. Locators match names the way e2e does:
+a list row, status, or alert e2e names from its content is also found by the
+text it shows, an editor's host by its label, and a name with icon-font
+glyphs through a small `named()` helper.

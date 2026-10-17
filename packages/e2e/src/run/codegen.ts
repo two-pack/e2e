@@ -19,7 +19,9 @@ import { readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { RecordableAction } from '../agent/actions.ts';
 import { TraceRecorder } from '../cache/recorder.ts';
-import type { DerivedReason } from '../cache/trace.ts';
+import { bound, MAX_TRACE_DESCRIPTOR_CHARS, type DerivedReason, type RecordedAction } from '../cache/trace.ts';
+import type { RedactedNode } from '../agent/observation.ts';
+import { collapseText } from '../internal/text.ts';
 import type { ResolvedConfig } from '../config/resolve.ts';
 import type { CodegenFile, CodegenJudgment, CodegenRecording, CodegenStep, CodegenTest } from '../engine/codegen.ts';
 import { writeTextReport } from '../report/write.ts';
@@ -49,9 +51,41 @@ export interface CodegenStepRecorder {
   recordDerivedGap(reason: DerivedReason): void;
 }
 
+/** The longest `shownText` kept, as a descriptor field is (`MAX_TRACE_DESCRIPTOR_CHARS`). */
+const MAX_SHOWN_TEXT_CHARS = MAX_TRACE_DESCRIPTOR_CHARS;
+
+/**
+ * The text a node and its descendants show, joined in document order, when
+ * it differs from the node's name; undefined for a leaf, for nothing shown,
+ * or for text the redactor would alter. An engine may name a node from its
+ * descendants' names (a list row by its title and a button's label), which a
+ * script matching the text on screen cannot find; this is what it can.
+ */
+export function shownTextOf(node: RedactedNode | undefined, redact: (text: string) => string): string | undefined {
+  if (node === undefined || (node.children ?? []).length === 0) return undefined;
+  const parts: string[] = [];
+  const collect = (current: RedactedNode): void => {
+    if (current.text !== undefined && current.text.trim() !== '') parts.push(current.text);
+    for (const child of current.children ?? []) collect(child);
+  };
+  collect(node);
+  const shown = collapseText(parts.join(' '));
+  if (shown === '' || shown === collapseText(node.name ?? '') || redact(shown) !== shown) return undefined;
+  return bound(shown, MAX_SHOWN_TEXT_CHARS);
+}
+
+/** What a step's actions showed, by the index of the recorded action: the target's and a drag destination's. */
+interface ShownTexts {
+  readonly target?: string | undefined;
+  readonly destination?: string | undefined;
+}
+
 /** The recording of one attempt's `agent.act` steps. */
 export class CodegenLog {
-  private readonly steps = new Map<string, { readonly recorder: TraceRecorder; startLocation: string | undefined }>();
+  private readonly steps = new Map<
+    string,
+    { readonly recorder: TraceRecorder; startLocation: string | undefined; readonly shown: Map<number, ShownTexts> }
+  >();
   private readonly judgments = new Map<string, CodegenJudgment>();
 
   constructor(readonly attemptId: string) {}
@@ -62,12 +96,18 @@ export class CodegenLog {
    * the ledger would alter is masked and the recording marked incomplete.
    */
   open(stepId: string, redaction: { readonly redact: (text: string) => string; readonly redactCut: (text: string) => string }): CodegenStepRecorder {
-    const step = { recorder: new TraceRecorder(redaction), startLocation: undefined as string | undefined };
+    const step = { recorder: new TraceRecorder(redaction), startLocation: undefined as string | undefined, shown: new Map<number, ShownTexts>() };
     this.steps.set(stepId, step);
     return {
       record: (action, location) => {
-        if (step.recorder.recordedCount === 0) step.startLocation = location;
+        const index = step.recorder.recordedCount;
+        if (index === 0) step.startLocation = location;
         step.recorder.record(action);
+        // A scroll folded into the one before it, or an action over the cap, added no entry.
+        if (step.recorder.recordedCount !== index + 1) return;
+        const target = shownTextOf('node' in action ? action.node : undefined, redaction.redact);
+        const destination = action.name === 'drag' ? shownTextOf(action.destination.node, redaction.redact) : undefined;
+        if (target !== undefined || destination !== undefined) step.shown.set(index, { target, destination });
       },
       recordGap: (toolName) => step.recorder.recordGap(toolName),
       recordDerivedGap: (reason) => step.recorder.recordDerivedGap(reason),
@@ -82,12 +122,12 @@ export class CodegenLog {
   /** The act steps that committed at least one action and the judgments that passed, by step id. */
   snapshot(): CodegenAttempt {
     const steps: Record<string, CodegenStepData> = {};
-    for (const [stepId, { recorder, startLocation }] of this.steps) {
+    for (const [stepId, { recorder, startLocation, shown }] of this.steps) {
       if (recorder.recordedCount === 0) continue;
       steps[stepId] = {
         recording: {
           ...(startLocation === undefined ? {} : { startLocation }),
-          actions: [...recorder.recorded],
+          actions: recorder.recorded.map((action, index) => withShownText(action, shown.get(index))),
           incomplete: recorder.incomplete,
         },
       };
@@ -95,6 +135,17 @@ export class CodegenLog {
     for (const [stepId, judgment] of this.judgments) steps[stepId] = { ...steps[stepId], judgment };
     return { attemptId: this.attemptId, steps };
   }
+}
+
+/** A recorded action with what its nodes showed added to their descriptors. */
+function withShownText(action: RecordedAction, shown: ShownTexts | undefined): RecordedAction {
+  if (shown === undefined || !('target' in action) || action.target === undefined) return action;
+  const target = shown.target === undefined ? action.target : { ...action.target, shownText: shown.target };
+  if (action.name === 'drag') {
+    const destination = shown.destination === undefined ? action.destination : { ...action.destination, shownText: shown.destination };
+    return { ...action, target, destination };
+  }
+  return { ...action, target };
 }
 
 /** What one `--codegen` write produced. */

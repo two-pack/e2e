@@ -67,6 +67,7 @@ import { z } from 'zod';
 test.use({ baseURL: process.env["BASE_URL"] ?? "http://localhost:3000/" });
 
 function secret(variable: string): string { /* reads process.env[variable] */ }
+function named(name: string, prefix = false): RegExp { /* the whole name, as e2e matches it */ }
 function within(page: Page, key: string): Locator { /* the row or list item holding key */ }
 const credentials = { /* e2e's credentials, from E2E_USER_<NAME>_USERNAME and _PASSWORD */ };
 
@@ -74,20 +75,20 @@ test('signs in and buys a hat', async ({ page }) => {
   const buyer = credentials.user('buyer');
   await page.goto('/login');
   // agent.act: sign in
-  await page.getByRole("textbox", { name: "Email", exact: true }).fill("buyer@example.com");
-  await page.getByRole("textbox", { name: "Password", exact: true }).fill(secret("E2E_USER_BUYER_PASSWORD"));
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByRole("textbox", { name: named("Email") }).or(page.getByLabel(named("Email"))).fill("buyer@example.com");
+  await page.getByRole("textbox", { name: named("Password") }).or(page.getByLabel(named("Password"))).fill(secret("E2E_USER_BUYER_PASSWORD"));
+  await page.getByRole("button", { name: named("Sign in") }).click();
   // agent.waitFor: the shop is shown
   await expect(page).toHaveURL("/shop", { timeout: 10_000 });
-  await expect(page.getByRole("heading", { name: "Hats", exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("heading", { name: named("Hats") })).toBeVisible({ timeout: 10_000 });
   // agent.act: add the blue hat to the cart and check out
-  await within(page, "Blue hat").getByRole("button", { name: "Add to cart", exact: true }).click();
-  await page.getByRole("link", { name: "Cart", exact: true }).click();
-  await page.getByRole("button", { name: "Check out", exact: true }).click();
+  await within(page, "Blue hat").getByRole("button", { name: named("Add to cart") }).click();
+  await page.getByRole("link", { name: named("Cart") }).click();
+  await page.getByRole("button", { name: named("Check out") }).click();
   // agent.assert: the order is confirmed
-  await expect(page.getByRole("status", { name: "Order", exact: true })).toContainText("Order #1042 confirmed");
+  await expect(page.getByRole("heading", { name: named("Order #1042 confirmed") })).toBeVisible();
   // agent.extract: the order number
-  await expect(page.getByRole("status", { name: "Order", exact: true })).toContainText("#1042");
+  await expect(page.getByRole("heading", { name: named("Order #1042 confirmed") })).toContainText("#1042");
   const order = ({"id":1042});
   expect(order.id).toBeGreaterThan(0);
   await expect(page.getByRole('button', { name: 'Track order', exact: true })).toBeVisible();
@@ -106,8 +107,11 @@ is not at the URL the e2e target used.
   judgment passes, the judge is asked one more question about the same
   screen: which facts on it show the assertion holds. The runner checks every
   proposed fact against that screen and keeps only the ones it bears out: a
-  node is visible, contains a text, holds a value, is checked or enabled, a
-  text is nowhere on screen, or the URL is a path.
+  node is visible, contains a text, holds a value (an empty one included), is
+  checked or enabled; so many nodes of a role are on screen, or they read in
+  a given order; a text is nowhere on screen, or the URL is a path. A text is
+  kept as missing only when the assertion itself says it is missing: a word
+  the screen never showed would pass without proving anything.
 - **`agent.waitFor`** becomes the same `expect` calls with the call's
   `timeout` (30 seconds when it names none). Playwright retries each until
   then, as `waitFor` polled.
@@ -125,6 +129,24 @@ placeholder, the structural selector, and text. A node that sat in a row,
 list item, group, or dialog is scoped to it by `within()`, and one of several
 identical controls gets `.nth()`. The web engine's
 [`testIdAttribute`](/browser) is set with `selectors.setTestIdAttribute`.
+
+Names are matched the way e2e matches them, which is not always the way
+Playwright computes them:
+
+- `named("Save")` matches the whole name, with the icon-font glyphs e2e drops
+  from a name allowed around its words.
+- e2e names a `listitem`, `status`, or `alert` from what it contains, so the
+  model can read a row by what it says; Playwright leaves those unnamed unless
+  the author named them. Such a node is found by either: the name an author
+  gave it, or the text it shows as the whole of its content
+  (`.or(page.getByRole("listitem").filter({ hasText: /^\s*Buy\s*milk\s*$/u }))`).
+- A text field e2e reads as a `textbox` that Playwright gives no role to (an
+  editor's `contenteditable` host) is also found by its label.
+- An `iframe` is found by its `title` or `aria-label`.
+
+The web engine's tests run every generated locator against the pages its
+own tree is checked on, and against every web-benchmark scenario, so a
+node e2e reads that the generated code could not find shows up there.
 
 ## How the rest of the test is converted
 

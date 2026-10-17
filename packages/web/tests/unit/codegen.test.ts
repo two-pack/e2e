@@ -1,4 +1,4 @@
-import type { CodegenAction, CodegenCheck, CodegenFile, CodegenRecording, CodegenStep, CodegenTest } from 'e2e/engine';
+import type { CodegenAction, CodegenCheck, CodegenFile, CodegenRecording, CodegenStep, CodegenTargetDescriptor, CodegenTest } from 'e2e/engine';
 import { describe, expect, it } from 'vitest';
 import { playwrightCodegen } from '../../src/codegen.ts';
 
@@ -63,15 +63,15 @@ describe('playwright codegen statements', () => {
         { name: 'drag', summary: 'drag', target: { testId: 'hat' }, destination: { testId: 'cart' } },
       ]),
     );
-    expect(code).toContain('await page.getByRole("button", { name: "Buy", exact: true }).click();');
+    expect(code).toContain('await page.getByRole("button", { name: named("Buy") }).click();');
     expect(code).toContain('.dblclick();');
     expect(code).toContain('.click({ delay: 1000 });');
     expect(code).toContain('.click({ button: "right" });');
     expect(code).toContain('.hover();');
     expect(code).toContain('.scrollIntoViewIfNeeded();');
-    expect(code).toContain('await page.getByRole("textbox", { name: "Size", exact: true }).fill("L \\"large\\"");');
+    expect(code).toContain('await page.getByRole("textbox", { name: named("Size") }).or(page.getByLabel(named("Size"))).fill("L \\"large\\"");');
     expect(code).toContain('.press("Enter");');
-    expect(code).toContain('await page.getByRole("combobox", { name: "Color", exact: true }).selectOption({ label: "Red" });');
+    expect(code).toContain('await page.getByRole("combobox", { name: named("Color") }).selectOption({ label: "Red" });');
     expect(code).toContain('.setChecked(false);');
     expect(code).toContain('.setInputFiles(["fixtures/hat.png"]);');
     expect(code).toContain('await page.getByTestId("hat").dragTo(page.getByTestId("cart"));');
@@ -91,10 +91,34 @@ describe('playwright codegen statements', () => {
     expect(code).toContain('await page.getByPlaceholder("Search hats", { exact: true }).click();');
     expect(code).toContain('await page.locator("[name=\\"size\\"]").click();');
     expect(code).toContain('await page.getByText("Free shipping", { exact: true }).click();');
-    expect(code).toContain('await within(page, "Blue hat").getByRole("button", { name: "Add", exact: true }).nth(1).click();');
+    expect(code).toContain('await within(page, "Blue hat").getByRole("button", { name: named("Add") }).nth(1).click();');
+    expect(code).toContain('function named(name: string, prefix = false): RegExp {');
     expect(code).toContain('import type { Locator, Page } from "@playwright/test";');
     expect(code).toContain('function within(page: Page, key: string): Locator {');
     expect(code).not.toContain('setTestIdAttribute');
+  });
+
+  it('finds a node e2e names from its content by what it shows, and a frame by its title', () => {
+    const code = render(
+      actFile([
+        { name: 'tap', summary: '1', target: { role: 'listitem', name: '資料を作る' } },
+        {
+          name: 'tap',
+          summary: '2',
+          target: { role: 'listitem', name: 'NDA Review 8 rules More actions for NDA Review', shownText: 'NDA Review 8 rules ⋯' } as CodegenTargetDescriptor,
+        },
+        { name: 'tap', summary: '3', target: { role: 'image', name: 'Logo' } },
+        { name: 'tap', summary: '4', target: { role: 'iframe', name: 'checkout-frame' } },
+        { name: 'tap', summary: '5', target: { role: 'alert', name: `${'x'.repeat(10)}…` } },
+      ]),
+    );
+    expect(code).toContain(
+      'await page.getByRole("listitem", { name: named("資料を作る") }).or(page.getByRole("listitem").filter({ hasText: /^\\s*資料を作る\\s*$/u })).click();',
+    );
+    expect(code).toContain('page.getByRole("listitem").filter({ hasText: /^\\s*NDA\\s*Review\\s*8\\s*rules\\s*⋯\\s*$/u })');
+    expect(code).toContain('await page.getByRole("img", { name: named("Logo") }).click();');
+    expect(code).toContain('await page.locator("iframe[title=\\"checkout-frame\\"], iframe[aria-label=\\"checkout-frame\\"]").click();');
+    expect(code).toContain('page.getByRole("alert", { name: named("xxxxxxxxxx", true) }).or(page.getByRole("alert").filter({ hasText: /^\\s*xxxxxxxxxx/u }))');
   });
 
   it("sets the engine's test id attribute when it is not Playwright's default", () => {
@@ -148,7 +172,7 @@ describe('playwright codegen statements', () => {
     expect(code).toContain('await page.keyboard.press("ControlOrMeta+A");\n  await page.keyboard.type("hello");');
     expect(code).toContain('await page.keyboard.press("Tab");');
     expect(code).toContain('await page.mouse.wheel(0, 1200);');
-    expect(code).toContain('await page.getByRole("list", { name: "Hats", exact: true }).hover();\n  await page.mouse.wheel(-600, 0);');
+    expect(code).toContain('await page.getByRole("list", { name: named("Hats") }).hover();\n  await page.mouse.wheel(-600, 0);');
     expect(code).toContain('await page.getByText("Red hat").first().scrollIntoViewIfNeeded();');
     expect(code).toContain('// A bare point on the 1280x720 viewport the run used.\n  await page.mouse.click(10, 20);');
     expect(code).toContain('await page.mouse.move(box.x + box.width * 0.25, box.y + box.height * 0.5);');
@@ -172,17 +196,25 @@ describe('playwright codegen statements', () => {
       { kind: 'url', location: 'http://127.0.0.1:4271/orders/12' },
     ];
     const asserted = render(judgedFile('agent.assert', checks));
-    expect(asserted).toContain('await expect(page.getByRole("status", { name: "Order", exact: true })).toBeVisible();');
-    expect(asserted).toContain('.toContainText("Order #12 confirmed");');
+    const order = 'page.getByRole("status", { name: named("Order") }).or(page.getByRole("status").filter({ hasText: /^\\s*Order\\s*$/u }))';
+    expect(asserted).toContain(`await expect(${order}).toBeVisible();`);
+    expect(asserted).toContain('.toContainText(/Order\\s*#12\\s*confirmed/u);');
     expect(asserted).toContain('.toHaveValue("ada@example.test");');
-    expect(asserted).toContain('await expect(page.getByRole("checkbox", { name: "Gift", exact: true })).not.toBeChecked();');
-    expect(asserted).toContain('await expect(page.getByRole("button", { name: "Pay", exact: true })).toBeDisabled();');
-    expect(asserted).toContain('await expect(page.getByText("Payment failed")).toHaveCount(0);');
+    expect(asserted).toContain('await expect(page.getByRole("checkbox", { name: named("Gift") })).not.toBeChecked();');
+    expect(asserted).toContain('await expect(page.getByRole("button", { name: named("Pay") })).toBeDisabled();');
+    expect(asserted).toContain('await expect(page.getByText(/Payment\\s*failed/u)).toHaveCount(0);');
     expect(asserted).toContain('await expect(page).toHaveURL("/orders/12");');
     const waited = render(judgedFile('agent.waitFor', checks));
     expect(waited).toContain('.toBeVisible({ timeout: 30_000 });');
-    expect(waited).toContain('.toContainText("Order #12 confirmed", { timeout: 30_000 });');
+    expect(waited).toContain('.toContainText(/Order\\s*#12\\s*confirmed/u, { timeout: 30_000 });');
     expect(waited).toContain('.toHaveCount(0, { timeout: 30_000 });');
+    expect(render(judgedFile('agent.assert', [{ kind: 'count', role: 'listitem', count: 3 }]))).toContain(
+      'await expect(page.getByRole("listitem")).toHaveCount(3);',
+    );
+    expect(render(judgedFile('agent.assert', [{ kind: 'order', role: 'listitem', texts: ['Milk', 'Hot tea'] }]))).toContain(
+      'await expect(page.getByRole("listitem")).toContainText(["Milk", /Hot\\s*tea/u]);',
+    );
+    expect(render(judgedFile('agent.assert', [{ kind: 'value', target: { role: 'textbox', name: 'Note' }, value: '' }]))).toContain('.toHaveValue("");');
     expect(render(judgedFile('agent.extract', [checks[1]!], { order: 12 }))).toContain('// Returned {"order":12}.');
     expect(render(judgedFile('agent.assert', []))).toContain('// TODO: no deterministic check could be derived');
   });
@@ -349,22 +381,24 @@ describe('playwright codegen from the test source', () => {
     expect(code).toContain(
       [
         '    // agent.act: sign in',
-        '    await page.getByRole("textbox", { name: "Email", exact: true }).fill("buyer@example.test");',
-        '    await page.getByRole("textbox", { name: "Password", exact: true }).fill(secret("E2E_USER_BUYER_PASSWORD"));',
+        '    await page.getByRole("textbox", { name: named("Email") }).or(page.getByLabel(named("Email"))).fill("buyer@example.test");',
+        '    await page.getByRole("textbox", { name: named("Password") }).or(page.getByLabel(named("Password"))).fill(secret("E2E_USER_BUYER_PASSWORD"));',
       ].join('\n'),
     );
-    expect(code).toContain('    // agent.act: add a hat to the cart\n    await page.getByRole("button", { name: "Add hat", exact: true }).click();');
-    expect(code).toContain('    // agent.assert: the cart holds one hat\n    await expect(page.getByRole("status", { name: "Cart", exact: true })).toContainText("1 item");');
+    expect(code).toContain('    // agent.act: add a hat to the cart\n    await page.getByRole("button", { name: named("Add hat") }).click();');
+    expect(code).toContain(
+      '    // agent.assert: the cart holds one hat\n    await expect(page.getByRole("status", { name: named("Cart") }).or(page.getByRole("status").filter({ hasText: /^\\s*Cart\\s*$/u }))).toContainText(/1\\s*item/u);',
+    );
     expect(code).toContain(
       [
         '    // agent.extract: the order',
-        '    await expect(page.getByRole("heading", { name: "Order 12", exact: true })).toContainText("Order 12");',
+        '    await expect(page.getByRole("heading", { name: named("Order 12") })).toContainText(/Order\\s*12/u);',
         '    const order = ({"id":12});',
         '    expect(order.id).toBe(12);',
       ].join('\n'),
     );
     expect(code).toContain(
-      '    // agent.waitFor: the receipt is shown\n    await expect(page.getByRole("region", { name: "Receipt", exact: true })).toBeVisible({ timeout: 5_000 });',
+      '    // agent.waitFor: the receipt is shown\n    await expect(page.getByRole("region", { name: named("Receipt") })).toBeVisible({ timeout: 5_000 });',
     );
     expect(code).not.toContain('await agent.');
   });
@@ -378,6 +412,13 @@ describe('playwright codegen from the test source', () => {
       { ...CONVERTED_TEST, steps: CONVERTED_TEST.steps.map((recorded) => (recorded.api === 'agent.assert' ? { ...recorded, judgment: { checks: [] } } : recorded)) },
     ]);
     expect(unjudged).toContain('throw new Error("agent.assert(\\"the cart holds one hat\\") has no recorded check; write it as an expect()");');
+  });
+
+  it('names a call whose instruction is a variable by the value it has when the generated test runs', () => {
+    const source = `import { test } from '@e2e-dev/web';\n\ntest('signs in', async ({ agent }) => {\n  const login = 'log in as admin';\n  await agent.act(login);\n});\n`;
+    const code = convert(source, []);
+    expect(code).toContain('  // agent.act(login)\n  // TODO: no passing run reached this call');
+    expect(code).toContain('  throw new Error(`agent.act(${JSON.stringify(login)}) was not recorded by e2e run --codegen`);');
   });
 
   it('falls back to the recorded steps when the source does not parse', () => {
