@@ -728,6 +728,7 @@
         "usage": { "$ref": "#/$defs/usage" },
         "carried": { "$ref": "#/$defs/carried" },
         "explore": { "$ref": "#/$defs/explore" },
+        "codegen": { "$ref": "#/$defs/codegen" },
         "extensions": { "$ref": "#/$defs/extensions" }
       }
     },
@@ -775,6 +776,33 @@
         "errorCode": { "type": "string", "minLength": 1 },
         "startedAt": { "$ref": "#/$defs/timestamp" },
         "durationMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "codegen": {
+      "description": "What e2e run --codegen wrote: the directory and files, project-root relative, and every judgment the written code does not prove whole. Present only on a run that asked for code and reached its tests.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dir", "files", "gaps"],
+      "properties": {
+        "dir": { "type": "string", "minLength": 1 },
+        "files": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "gaps": { "type": "array", "items": { "$ref": "#/$defs/codegenGap" } }
+      }
+    },
+    "codegenGap": {
+      "description": "One judgment the generated code does not prove whole: partial when its checks prove only some of the instruction, unconverted when no check could be kept and the code throws in its place. uncovered holds the parts of the instruction the code does not check, as the judge named them.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "line", "kind", "source", "test", "api", "instruction", "uncovered"],
+      "properties": {
+        "file": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "kind": { "enum": ["partial", "unconverted"] },
+        "source": { "type": "string", "minLength": 1 },
+        "test": { "type": "string" },
+        "api": { "type": "string", "minLength": 1 },
+        "instruction": { "type": "string" },
+        "uncovered": { "type": "array", "items": { "type": "string" } }
       }
     },
     "explore": {

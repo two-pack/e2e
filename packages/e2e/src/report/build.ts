@@ -14,6 +14,7 @@ import { packageVersion } from '../internal/package-version.ts';
 import { projectRelativePath } from '../internal/source.ts';
 import type { VcsInfo } from '../internal/vcs.ts';
 import type { SkipInfo } from '../collect/select.ts';
+import type { CodegenGapRecord } from '../run/codegen.ts';
 import { someSkippedAfterFailure } from '../run/records.ts';
 import type {
   ArtifactRecord,
@@ -86,6 +87,8 @@ export interface BuildReportOptions {
   targetProvenance: ReadonlyMap<string, TargetProvenance>;
   /** The exploration record of an `e2e explore` run; absent for a test run. */
   explore?: ReportExplore | undefined;
+  /** What `--codegen` wrote; absent unless the run asked for code and wrote it. */
+  codegen?: ReportCodegen | undefined;
   /** The commit the code under test came from; absent outside git and CI. */
   vcs?: VcsInfo | undefined;
 }
@@ -123,6 +126,13 @@ export interface ReportExploreStep {
   errorCode?: string | undefined;
   startedAt: string;
   durationMs: number;
+}
+
+/** The `run.codegen` block: where `--codegen` wrote, project-root relative, and the judgments its code does not prove whole. */
+export interface ReportCodegen {
+  readonly dir: string;
+  readonly files: readonly string[];
+  readonly gaps: readonly CodegenGapRecord[];
 }
 
 /** The `run.explore` block: what `e2e explore` was asked, did, and found. */
@@ -399,6 +409,8 @@ export interface Report1Document {
     carried?: ReportCarried | undefined;
     /** Present on an `e2e explore` run only. */
     explore?: ReportExplore | undefined;
+    /** Present on an `e2e run --codegen` run that wrote its code. */
+    codegen?: ReportCodegen | undefined;
   };
 }
 
@@ -778,6 +790,7 @@ export function buildReport(options: BuildReportOptions): Report1Document {
         discovered: summary.discovered,
       }),
       ...(options.explore === undefined ? {} : { explore: options.explore }),
+      ...(options.codegen === undefined ? {} : { codegen: options.codegen }),
     },
   };
 }

@@ -21,8 +21,8 @@
  */
 
 import { createRequire } from 'node:module';
-import type { CodegenFile, CodegenStep, CodegenTest } from 'e2e/engine';
-import { literal, oneLine, StatementWriter } from './codegen-statements.ts';
+import type { CodegenFile, CodegenRendered, CodegenStep, CodegenTest } from 'e2e/engine';
+import { gapComments, gapMarker, literal, oneLine, StatementWriter, takeGapLines } from './codegen-statements.ts';
 
 /** An ESTree node as `oxc-parser` returns it, offsets in UTF-16 code units. */
 interface AstNode {
@@ -105,7 +105,7 @@ interface WalkContext {
  * is no source or it does not parse, and the caller falls back to writing the
  * recorded steps alone.
  */
-export function convertSource(file: CodegenFile, testIdAttribute: string): string | undefined {
+export function convertSource(file: CodegenFile, testIdAttribute: string): CodegenRendered | undefined {
   if (file.source === undefined) return undefined;
   const program = parse(file.file, file.source);
   if (program === undefined) return undefined;
@@ -125,6 +125,8 @@ function parse(fileName: string, source: string): AstNode | undefined {
 class SourceConverter {
   private readonly edits: Edit[] = [];
   private readonly sites: AgentSite[] = [];
+  /** The judgment steps with a gap the code marks, by marker index. */
+  private readonly gaps: { readonly test: number; readonly step: number }[] = [];
   private readonly writer: StatementWriter;
   private readonly lineStarts: number[];
   /** Local names of what the file imported from e2e, by the name e2e exports it under. */
@@ -145,7 +147,7 @@ class SourceConverter {
     }
   }
 
-  convert(program: AstNode): string {
+  convert(program: AstNode): CodegenRendered {
     for (const statement of children(program)) {
       if (statement.type === 'ImportDeclaration') this.visitImport(statement);
     }
@@ -155,7 +157,14 @@ class SourceConverter {
     const helpers = this.helperLines();
     this.edits.push({ start: 0, end: 0, text: `${top.join('\n')}\n` });
     this.edits.push({ start: this.lastImportEnd, end: this.lastImportEnd, text: `${this.lastImportEnd === 0 ? '' : '\n'}\n${helpers.join('\n')}\n` });
-    return `${applyEdits(this.source, this.edits).replace(/\n{3,}/gu, '\n\n').trimEnd()}\n`;
+    const { code, lines } = takeGapLines(`${applyEdits(this.source, this.edits).replace(/\n{3,}/gu, '\n\n').trimEnd()}\n`);
+    return {
+      code,
+      gaps: this.gaps.flatMap((gap, index) => {
+        const line = lines.get(index);
+        return line === undefined ? [] : [{ ...gap, line }];
+      }),
+    };
   }
 
   /** Drops an import from e2e or an engine, remembering its names; keeps every other import. */
@@ -420,12 +429,19 @@ class SourceConverter {
     const byLine = pool.filter((step) => step.line !== undefined && step.line >= first && step.line <= last);
     const withData = (steps: readonly CodegenStep[]): CodegenStep | undefined =>
       steps.find((step) => step.recording !== undefined || step.judgment !== undefined) ?? steps[0];
-    if (byLine.length > 0) return withData(byLine);
     const instruction = stringValue(((site.call['arguments'] as AstNode[] | undefined) ?? [])[0]);
-    if (instruction !== undefined) {
-      const byLabel = pool.filter((step) => step.label === instruction || (step.label.endsWith('…') && instruction.startsWith(step.label.slice(0, -1))));
-      if (byLabel.length > 0) return withData(byLabel);
-    }
+    const labelled = (steps: readonly CodegenStep[]): CodegenStep[] =>
+      instruction === undefined
+        ? [...steps]
+        : steps.filter((step) => step.label === instruction || (step.label.endsWith('…') && instruction.startsWith(step.label.slice(0, -1))));
+    // A line a loader reported off by a few is still a line: of the steps on
+    // it, the one whose instruction this call spells is the call's.
+    const onLine = labelled(byLine);
+    if (onLine.length > 0) return withData(onLine);
+    if (byLine.length > 0 && instruction === undefined) return withData(byLine);
+    const byLabel = instruction === undefined ? [] : labelled(pool);
+    if (byLabel.length > 0) return withData(byLabel);
+    if (byLine.length > 0) return withData(byLine);
     return site.test === undefined ? undefined : pool[site.ordinal];
   }
 
@@ -444,6 +460,7 @@ class SourceConverter {
         : `throw new Error(${literal(`${site.api}(${JSON.stringify(oneLine(instruction))}) ${why}`)});`;
     let lines: string[];
     let value = 'undefined';
+    let marked: number | undefined;
     if (step === undefined) {
       lines = [`// TODO: no passing run reached this call, so nothing was recorded for it.`, missing('was not recorded by e2e run --codegen')];
     } else if (site.api === 'agent.act') {
@@ -459,26 +476,46 @@ class SourceConverter {
             ];
     } else {
       const checks = step.judgment?.checks ?? [];
+      const gap = step.judgment?.gap;
       const timeout = site.api === 'agent.waitFor' ? (optionText(args[1], 'timeout', this.source) ?? DEFAULT_JUDGMENT_TIMEOUT) : undefined;
       lines =
         checks.length === 0
-          ? ['// TODO: no deterministic check could be derived from the screen this judgment passed on.', missing('has no recorded check; write it as an expect()')]
-          : checks.map((check) => this.writer.check(check, timeout));
+          ? [
+              '// TODO: no deterministic check could be derived from the screen this judgment passed on.',
+              ...(gap === undefined ? [] : gapComments(gap, false).slice(1)),
+              missing('has no recorded check; write it as an expect()'),
+            ]
+          : [...(gap === undefined ? [] : gapComments(gap, true)), ...checks.map((check) => this.writer.check(check, timeout))];
+      if (gap !== undefined) marked = this.markGap(step);
       if (site.api === 'agent.extract') {
         if (step.judgment?.value === undefined) lines.push(missing('returned a value that was not recorded'));
         else value = literal(step.judgment.value);
       }
     }
-    lines.unshift(header);
+    lines.unshift(marked === undefined ? header : `${gapMarker(marked)}${header}`);
     const indent = this.indentAt(site.statement?.start ?? site.call.start);
     if (site.standalone && site.statement !== undefined) {
       this.edits.push({ start: site.statement.start, end: site.statement.end, text: lines.join(`\n${indent}`), block: true });
       return;
     }
-    this.edits.push({ start: site.expression.start, end: site.expression.end, text: value === 'undefined' ? 'undefined' : `(${value})`, block: true });
+    // A call the code did not await on the spot (`agent.assert(…).catch(…)`, a
+    // promise kept for later) still stands for a promise.
+    const replacement = site.expression === site.call ? `Promise.resolve(${value === 'undefined' ? '' : value})` : value === 'undefined' ? 'undefined' : `(${value})`;
+    this.edits.push({ start: site.expression.start, end: site.expression.end, text: replacement, block: true });
     if (site.statement !== undefined) {
       this.edits.push({ start: site.statement.start, end: site.statement.start, text: lines.map((line) => `${line}\n${indent}`).join('') });
     }
+  }
+
+  /** Notes a judgment step with a gap, once, and returns the marker index its header carries. */
+  private markGap(step: CodegenStep): number | undefined {
+    const test = this.file.tests.findIndex((candidate) => candidate.steps.includes(step));
+    if (test === -1) return undefined;
+    const index = this.file.tests[test]!.steps.indexOf(step);
+    // A step a loop or a helper reaches from several call sites is reported where the first one writes it.
+    if (this.gaps.some((gap) => gap.test === test && gap.step === index)) return undefined;
+    this.gaps.push({ test, step: index });
+    return this.gaps.length - 1;
   }
 
   /** The comment, imports, and settings the converted file opens with. */

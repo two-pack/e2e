@@ -117,6 +117,8 @@ export type RunEventFact =
       readonly type: 'notice';
       readonly target: string;
       readonly message: string;
+      /** `warning` for something the run produced that falls short of what was asked; absent for information. */
+      readonly level?: 'warning';
     }
   | {
       /**

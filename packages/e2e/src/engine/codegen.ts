@@ -67,8 +67,14 @@ export type CodegenCheck =
   | { readonly kind: 'count'; readonly role: string; readonly count: number }
   /** The nodes with the role show these texts, in this order (others may sit between them). */
   | { readonly kind: 'order'; readonly role: string; readonly texts: readonly string[] }
-  /** No node on screen shows `text`. */
+  /** No node on screen shows `text`, a text an earlier screen of the test showed. */
   | { readonly kind: 'absent'; readonly text: string }
+  /**
+   * The node an earlier screen of the test showed is no longer on screen.
+   * The descriptor has no `within` or `position`: the node is gone from the
+   * whole screen, not from one container that may itself be gone.
+   */
+  | { readonly kind: 'gone'; readonly target: CodegenTargetDescriptor }
   /** The surface's location, path and query on the app's own origin, else whole. */
   | { readonly kind: 'url'; readonly location: string };
 
@@ -81,6 +87,34 @@ export interface CodegenJudgment {
   readonly checks: readonly CodegenCheck[];
   /** The value `agent.extract` returned, redacted; absent when it carried a secret. */
   readonly value?: unknown;
+  /** Present when the checks do not prove the whole judgment: what they leave out, for the code to say. */
+  readonly gap?: CodegenJudgmentGap;
+}
+
+/**
+ * What a judgment's checks leave unproven. Every text is model output,
+ * redacted, and left out where the redactor would alter it: it is the judge's
+ * account, never a fact the runner checked.
+ */
+export interface CodegenJudgmentGap {
+  /** The judge's own explanation of its verdict, absent when it gave none or it carried a secret. */
+  readonly explanation?: string;
+  /**
+   * The parts of the instruction no kept check proves: the ones the judge
+   * said it could not check, and those only a dropped check covered. Empty
+   * when the judge said nothing about which part is left (no checks at all).
+   */
+  readonly uncovered: readonly string[];
+  /** The checks the judge proposed that the runner did not keep, and why. */
+  readonly dropped: readonly CodegenDroppedCheck[];
+}
+
+/** One proposed check the runner did not keep. */
+export interface CodegenDroppedCheck {
+  /** The check as the judge proposed it, such as `absent "Logout"`; absent when it carried a secret. */
+  readonly check?: string;
+  /** Why it was not kept, in a phrase: `the instruction does not say this text is missing`. */
+  readonly reason: string;
 }
 
 /** One step of a passing test, in the order it ran. */
@@ -121,10 +155,23 @@ export interface CodegenFile {
   readonly tests: readonly CodegenTest[];
 }
 
+/** What `render` returns: the code, and where it says a judgment was not converted whole. */
+export interface CodegenRendered {
+  /** The source text of the file. */
+  readonly code: string;
+  /**
+   * The judgment steps with a `gap` the code marks, each once: the step by
+   * its indexes into `CodegenFile.tests` and that test's `steps`, and the
+   * one-based line of `code` the step starts at. The runner reports them
+   * after the run; it never reads `code`.
+   */
+  readonly gaps: readonly { readonly test: number; readonly step: number; readonly line: number }[];
+}
+
 /** Writes recorded agent steps out as the engine's own test code (`e2e run --codegen`). */
 export interface EngineCodegen {
   /** The extension of the files `render` writes, with its leading dot: `.spec.ts`. */
   readonly extension: string;
   /** Returns the source text for one test file's tests. Runs in the runner process after the run. */
-  render(file: CodegenFile): string;
+  render(file: CodegenFile): CodegenRendered;
 }

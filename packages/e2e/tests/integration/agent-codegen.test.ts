@@ -34,6 +34,13 @@ test.describe('counter', () => {
   });
 });
 
+test('leaves the counter behind', async ({ app, agent }) => {
+  await app.open();
+  await agent.assert('the counter is on screen');
+  await app.open('/about');
+  await agent.assert('the Increment button is gone and nothing is broken');
+});
+
 test('fails after the agent acted', async ({ app, agent, screen }) => {
   await app.open();
   await agent.act('increment the counter once');
@@ -62,21 +69,41 @@ const EXECUTOR_MODULE = `export const tapper = {
 `;
 
 /**
- * The judge the codegen question goes to: it proposes the counter's text,
- * which the screen bears out, and a node the screen never showed, which the
- * runner must drop. Self-contained, so a worker's config embeds its source.
+ * The judge the codegen question goes to. On the counter it proposes the
+ * counter's text, which the screen bears out, a node the screen never showed,
+ * which the runner must drop, and a word the assertion never said was
+ * missing. Once the counter is left behind it proposes the Increment button
+ * an earlier screen showed as gone and its text as absent, and names what it
+ * could not check. Self-contained, so a worker's config embeds its source.
  */
 function judge(call: FakeCall): unknown {
   if (call.schemaName !== 'agent-codegen-checks-1') throw new Error(`unexpected ${call.schemaName}`);
+  if (call.instruction.includes('is gone')) {
+    const earlier = /^(p\d+) button "Increment"/mu.exec(call.prompt)?.[1] ?? null;
+    const field = /^(p\d+) textbox "Email"/mu.exec(call.prompt)?.[1] ?? null;
+    return {
+      checks: [
+        { kind: 'gone', node: earlier, text: null, covers: 'the Increment button is gone' },
+        { kind: 'gone', node: field, text: null, covers: 'the Increment button is gone' },
+        { kind: 'absent', node: null, text: 'Increment', covers: 'the Increment button is gone' },
+        { kind: 'absent', node: null, text: 'Error', covers: 'nothing is broken' },
+        // A check that claims the whole instruction hides nothing the judge said it left out.
+        { kind: 'url', node: null, text: '/about', covers: call.instruction },
+      ],
+      uncovered: ['nothing is broken'],
+    };
+  }
   const line = call.lines.find((candidate) => /status "Counter"/u.test(candidate)) ?? '';
   const id = /#(\S+)/u.exec(line)?.[1] ?? null;
+  if (call.instruction.includes('is on screen')) return { checks: [{ kind: 'visible', node: id, text: null, covers: 'the counter is on screen' }], uncovered: [] };
   return {
     checks: [
-      { kind: 'text', node: id, text: '1' },
-      { kind: 'count', node: id, text: '1' },
-      { kind: 'visible', node: 'n9999', text: null },
-      { kind: 'absent', node: null, text: 'Error' },
+      { kind: 'text', node: id, text: '1', covers: 'the counter shows 1' },
+      { kind: 'count', node: id, text: '1', covers: null },
+      { kind: 'visible', node: 'n9999', text: null, covers: 'the counter shows 1' },
+      { kind: 'absent', node: null, text: 'Error', covers: null },
     ],
+    uncovered: [],
   };
 }
 
@@ -93,6 +120,7 @@ describe('--codegen on the in-process transport', () => {
   let project: FixtureProject;
   let executor: StepExecutor;
   let model: ModelInstance;
+  const warnings: string[] = [];
 
   beforeAll(async () => {
     app = await startFixtureApp();
@@ -102,7 +130,12 @@ describe('--codegen on the in-process transport', () => {
     outcome = await runExisting(project, {
       appUrl: app.url,
       config: { tests: 'tests/**/*.e2e.ts', agents: { default: { executor, model } } },
-      runOptions: { codegen: true },
+      runOptions: {
+        codegen: true,
+        onEvent: (event) => {
+          if (event.type === 'notice' && event.level === 'warning') warnings.push(event.message);
+        },
+      },
     });
   }, 120_000);
 
@@ -136,8 +169,44 @@ describe('--codegen on the in-process transport', () => {
       ].join('\n'),
     );
     // A node the screen never showed, and a word the assertion never said was missing, are dropped, not written.
-    expect(code).not.toContain('toBeVisible');
-    expect(code).not.toContain('Error"');
+    const counted = code.slice(code.indexOf('// agent.assert: the counter shows 1'), code.indexOf("test('leaves the counter behind'"));
+    expect(counted).not.toContain('toBeVisible');
+    expect(counted).not.toContain('getByText("Error")');
+  });
+
+  it('checks that an element an earlier screen showed is gone, and says what the checks leave unproven', () => {
+    expect(resultByTitle(outcome, 'leaves the counter behind').status).toBe('passed');
+    const code = readFileSync(path.join(project.dir, SPEC), 'utf8');
+    const lines = code.split('\n');
+    const header = lines.findIndex((line) => line.trim() === '// agent.assert: the Increment button is gone and nothing is broken');
+    expect(lines.slice(header, header + 6).map((line) => line.trim())).toEqual([
+      '// agent.assert: the Increment button is gone and nothing is broken',
+      '// NOTE: the checks below prove only part of this judgment.',
+      "//   The judge's explanation of its verdict (its reasoning, not a checked fact): judged",
+      '//   Not checked: nothing is broken',
+      '//   Dropped absent "Error": the instruction does not say this text is missing',
+      'await expect(page.getByRole("button", { name: "Increment", exact: true })).toHaveCount(0);',
+    ]);
+    // A field is an element too, found by its label whatever was typed into it.
+    expect(lines[header + 6]?.trim()).toBe('await expect(page.getByRole("textbox", { name: "Email", exact: true })).toHaveCount(0);');
+    expect(lines[header + 7]?.trim()).toBe('await expect(page.getByText("Increment")).toHaveCount(0);');
+    expect(lines[header + 8]?.trim()).toBe('await expect(page).toHaveURL("/about");');
+    // The first judgment's checks prove all of it: no note.
+    expect(code).toContain('  // agent.assert: the counter is on screen\n  await expect');
+    const gap = {
+      file: SPEC.split(path.sep).join('/'),
+      line: header + 1,
+      kind: 'partial',
+      source: 'tests/counter.e2e.ts',
+      test: 'leaves the counter behind',
+      api: 'agent.assert',
+      instruction: 'the Increment button is gone and nothing is broken',
+      uncovered: ['nothing is broken'],
+    };
+    expect(outcome.report.run.codegen).toEqual({ dir: '.e2e/codegen', files: [SPEC.split(path.sep).join('/')], gaps: [gap] });
+    expect(warnings).toEqual([
+      `--codegen: 1 judgment was only partly converted (${gap.file}:${String(gap.line)})`,
+    ]);
   });
 
   it('keeps a failing test, whose agent call recorded nothing, throwing where the call was', () => {
@@ -158,7 +227,7 @@ describe('--codegen on the in-process transport', () => {
     const replayed = await runExisting(project, {
       appUrl: app.url,
       config: { tests: 'tests/**/*.e2e.ts', agents: { default: { executor, model } } },
-      runOptions: { codegen: true, grep: [/increments through the agent/] },
+      runOptions: { codegen: true, grep: [/increments through the agent|leaves the counter behind/] },
     });
     expect(resultByTitle(replayed, 'increments through the agent').status).toBe('passed');
     const step = resultByTitle(replayed, 'increments through the agent').attempts[0]!.steps.find((candidate) => candidate.api === 'agent.act');

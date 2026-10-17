@@ -342,7 +342,7 @@ export class ListReporter implements Reporter {
         break;
       case 'notice':
         if (this.inFlight !== undefined) this.inFlight.narrated = true;
-        this.print(`${this.pc.dim('ℹ')} ${bounded(event.message)}`);
+        this.print(`${event.level === 'warning' ? this.pc.yellow('⚠') : this.pc.dim('ℹ')} ${bounded(event.message)}`);
         break;
       case 'setup':
         this.setupStep(event);

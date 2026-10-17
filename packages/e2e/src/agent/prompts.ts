@@ -52,6 +52,12 @@ export interface PromptInput {
    * sent next to pixels is a cheaper path to an answer than looking.
    */
   readonly withholdTree?: boolean | undefined;
+  /**
+   * Elements earlier screens of the test showed that this one does not, one
+   * line each with the id the response names it by (`--codegen` checks):
+   * quoted app content, evidence like the observation.
+   */
+  readonly earlier?: readonly string[] | undefined;
   readonly repair?:
     | {
         readonly issue: string;
@@ -87,6 +93,15 @@ export function buildPrompt(input: PromptInput): string {
         describePixels(pixels, input.withholdTree === true, observation.revision),
       );
     }
+  }
+  if (input.earlier !== undefined && input.earlier.length > 0) {
+    sections.push(
+      '',
+      '<shown-earlier>',
+      'Elements an earlier screen of this test showed that the current screen does not, by id, role, and what they read:',
+      ...input.earlier,
+      '</shown-earlier>',
+    );
   }
   if (input.repair !== undefined) {
     sections.push(

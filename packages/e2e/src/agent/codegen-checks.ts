@@ -6,10 +6,14 @@
  * observation it passed on: which facts on this screen prove the condition, as
  * checks a script can make without a model (this node is visible, reads this
  * text, holds this value, is checked; this text is nowhere; the location is
- * this). The answer is evidence to verify, never trusted: every check is held
- * against the same observation and dropped when the screen does not bear it
- * out, and every node is kept by the durable descriptor the replay cache
- * records, so a script finds it the way a replay would.
+ * this; this text, or this element an earlier screen of the test showed, is
+ * gone), each with the part of the instruction it proves, and which parts no
+ * such check can prove. The answer is evidence to verify, never trusted: every
+ * check is held against the same observation and dropped when the screen does
+ * not bear it out, and every node is kept by the durable descriptor the replay
+ * cache records, so a script finds it the way a replay would. What the kept
+ * checks leave unproven goes with them (`CodegenJudgmentGap`), for the code to
+ * say and the run to warn about.
  *
  * The question runs only in a `--codegen` run, after the verdict, on its own
  * budget; whatever goes wrong with it leaves the step's outcome untouched and
@@ -21,13 +25,21 @@ import { Invocation, type AgentContext } from './invocation.ts';
 import type { AgentObservation, RedactedNode } from './observation.ts';
 import { isRelocatableDescriptor, describePosition } from '../cache/relocate.ts';
 import type { TraceTargetDescriptor } from '../cache/trace.ts';
-import type { CodegenCheck, CodegenTargetDescriptor } from '../engine/codegen.ts';
-import { codegenExtrasOf, displayedTextOf } from '../run/codegen.ts';
+import type { CodegenCheck, CodegenDroppedCheck, CodegenJudgmentGap, CodegenTargetDescriptor } from '../engine/codegen.ts';
+import { codegenExtrasOf, displayedTextOf, type SeenScreens } from '../run/codegen.ts';
+import { carriesSecretMarker } from '../internal/redact.ts';
+import { bound } from '../cache/trace.ts';
 import { collapseText } from '../internal/text.ts';
 import { CHECKS_SCHEMA, CHECKS_SCHEMA_NAME, MAX_CHECKS, validateChecksResponse, type ProposedCheck } from './protocol.ts';
 
 /** One call and one repair round, as an assertion gets. */
 const CHECKS_MODEL_CALLS = 2;
+
+/** Most elements of earlier screens the question lists for a "gone" check, the newest. */
+const MAX_EARLIER_ELEMENTS = 20;
+
+/** Longest explanation or proposed check a gap keeps, in characters. */
+const MAX_GAP_TEXT = 300;
 
 const CHECKS_REQUEST = [
   'The instruction below held on this observation. A script that cannot ask a model has to verify the same thing on this screen.',
@@ -36,11 +48,14 @@ const CHECKS_REQUEST = [
   '- "checked", "unchecked", "enabled", "disabled": node is in that state.',
   '- "count": exactly text (a number) nodes with node\'s role are on screen. "order": the nodes with node\'s role appear in the order the screen shows them.',
   '- "absent": no node on screen shows text; only for words the instruction itself says are missing, gone, or not shown.',
+  '- "gone": node, an element listed under <shown-earlier>, is no longer on screen; for what the instruction says is missing, gone, or not shown.',
   '- "url": the location is exactly text, as the observation reports it.',
   'Cover every part of the instruction: a number of items is a "count", an order is an "order", an empty field is a "value" with text "".',
-  'node is the id of a node in the observation, such as "n12", or null for "absent" and "url". text is null where the kind takes none.',
+  'node is the id of a node in the observation, such as "n12", or of an element under <shown-earlier>, such as "p3"; null for "absent" and "url". text is null where the kind takes none.',
   'Prefer a node with a role and a name, and the shortest text that still proves the point. Never invent a node or a text the observation does not show.',
-  'Respond with { "checks": [{ "kind": <kind>, "node": <id or null>, "text": <text or null> }] }.',
+  'covers is the part of the instruction the check proves, copied word for word from the instruction.',
+  'uncovered lists, copied word for word, each part of the instruction that none of these checks can prove; [] when the checks prove all of it.',
+  'Respond with { "checks": [{ "kind": <kind>, "node": <id or null>, "text": <text or null>, "covers": <part of the instruction> }], "uncovered": [<part of the instruction>] }.',
 ].join('\n');
 
 /** What the judgment was, as the question frames it. */
@@ -55,6 +70,8 @@ export interface CodegenChecksRequest {
   readonly observation: AgentObservation | undefined;
   /** For `agent.extract`: the value it returned, which the checks should show on screen. */
   readonly value?: unknown;
+  /** The judge's explanation of the verdict, when it gave one. */
+  readonly explanation?: string | undefined;
   readonly timeoutMs: number;
 }
 
@@ -66,11 +83,43 @@ export interface CodegenChecksRequest {
  */
 export async function recordCodegenJudgment(runtime: AgentContext, request: CodegenChecksRequest): Promise<void> {
   const stepId = runtime.steps.currentStepId;
-  if (runtime.codegen === undefined || stepId === undefined) return;
-  const checks = await deriveCodegenChecks(runtime, request);
+  const codegen = runtime.codegen;
+  if (codegen === undefined || stepId === undefined) return;
+  const derived = await deriveCodegenChecks(runtime, codegen.seen, request);
+  const checks = derived?.checks ?? [];
   const serialized = request.value === undefined ? undefined : JSON.stringify(request.value);
   const keepValue = serialized !== undefined && runtime.redact(serialized) === serialized;
-  runtime.codegen.judged(stepId, { checks: checks ?? [], ...(keepValue ? { value: request.value } : {}) });
+  const uncovered = derived?.uncovered ?? [];
+  const explanation = request.explanation === undefined ? undefined : safeText(request.explanation, runtime.redact);
+  const gap: CodegenJudgmentGap | undefined =
+    checks.length > 0 && uncovered.length === 0
+      ? undefined
+      : { ...(explanation === undefined ? {} : { explanation }), uncovered, dropped: derived?.dropped ?? [] };
+  codegen.judged(stepId, {
+    checks,
+    ...(keepValue ? { value: request.value } : {}),
+    ...(gap === undefined ? {} : { gap }),
+  });
+}
+
+/** What the question left: the kept checks, the parts of the instruction they leave unproven, and the checks dropped. */
+interface DerivedChecks {
+  readonly checks: readonly CodegenCheck[];
+  readonly uncovered: readonly string[];
+  readonly dropped: readonly CodegenDroppedCheck[];
+}
+
+/** What one proposed check came to: kept as a check, or dropped for a reason. */
+type Confirmation = { readonly check: CodegenCheck } | { readonly reason: string };
+
+/** What a proposed check is held against: the screen, what earlier screens showed, and the instruction. */
+interface CheckContext {
+  readonly observation: Extract<AgentObservation, { kind: 'semantic' }>;
+  readonly instruction: string;
+  readonly seen: SeenScreens;
+  /** The elements the question listed under `<shown-earlier>`, by the id it gave them. */
+  readonly earlier: ReadonlyMap<string, CodegenTargetDescriptor>;
+  readonly redact: (text: string) => string;
 }
 
 /**
@@ -78,7 +127,7 @@ export async function recordCodegenJudgment(runtime: AgentContext, request: Code
  * observation confirms. Undefined when the observation has no tree to check
  * against or the question failed in any way.
  */
-async function deriveCodegenChecks(runtime: AgentContext, request: CodegenChecksRequest): Promise<readonly CodegenCheck[] | undefined> {
+async function deriveCodegenChecks(runtime: AgentContext, seen: SeenScreens, request: CodegenChecksRequest): Promise<DerivedChecks | undefined> {
   try {
     // A custom executor may run with no model at all; then there is no one to ask.
     if (runtime.select(request.agent).config.judge === undefined) return undefined;
@@ -93,6 +142,10 @@ async function deriveCodegenChecks(runtime: AgentContext, request: CodegenChecks
     });
     const observation = request.observation ?? (await invocation.observe());
     if (observation.kind !== 'semantic') return undefined;
+    // A screen not listed whole may hold what looks gone; nothing earlier is offered then.
+    const earlier = new Map(
+      (observation.truncated ? [] : seen.goneFrom(observation, MAX_EARLIER_ELEMENTS)).map((target, index) => [`p${String(index + 1)}`, target] as const),
+    );
     const instruction =
       request.value === undefined
         ? request.instruction
@@ -101,13 +154,41 @@ async function deriveCodegenChecks(runtime: AgentContext, request: CodegenChecks
       schemaName: CHECKS_SCHEMA_NAME,
       schema: CHECKS_SCHEMA,
       validate: validateChecksResponse,
-      prompt: { request: CHECKS_REQUEST, instruction, observation },
+      prompt: {
+        request: CHECKS_REQUEST,
+        instruction,
+        observation,
+        earlier: [...earlier].map(([id, target]) => `${id} ${describeElement(target)}`),
+      },
     });
-    const checks = proposed.flatMap((check) => {
-      const confirmed = confirmCheck(check, observation, request.instruction, runtime.redact);
-      return confirmed === undefined ? [] : [confirmed];
-    });
-    return dedupe(checks);
+    const context: CheckContext = { observation, instruction: request.instruction, seen, earlier, redact: runtime.redact };
+    const kept: { readonly check: CodegenCheck; readonly covers: string | undefined }[] = [];
+    const dropped: { readonly proposed: ProposedCheck; readonly reason: string }[] = [];
+    for (const check of proposed.checks) {
+      const confirmed = confirmCheck(check, context);
+      if ('check' in confirmed) kept.push({ check: confirmed.check, covers: partOf(check.covers) });
+      else dropped.push({ proposed: check, reason: confirmed.reason });
+    }
+    const keptParts = kept.flatMap(({ covers }) => (covers === undefined ? [] : [covers]));
+    const coveredByKept = (part: string): boolean => keptParts.some((keptPart) => squashPart(keptPart).includes(squashPart(part)));
+    // What the judge itself says it could not check stays, whatever a kept
+    // check claims to cover: a check that says it covers the whole
+    // instruction must not hide the part the same answer left out.
+    const uncovered = distinctParts([
+      ...proposed.uncovered.flatMap((part) => (partOf(part) === undefined ? [] : [partOf(part)!])),
+      ...dropped.flatMap(({ proposed: check }) => {
+        const part = partOf(check.covers);
+        return part === undefined || coveredByKept(part) ? [] : [part];
+      }),
+    ]);
+    return {
+      checks: dedupe(kept.map(({ check }) => check)),
+      uncovered: uncovered.map((part) => safeText(part, runtime.redact) ?? WITHHELD_PART),
+      dropped: dropped.map(({ proposed: check, reason }) => {
+        const described = describeProposed(check, context);
+        return described === undefined ? { reason } : { check: described, reason };
+      }),
+    };
   } catch {
     // The checks are a by-product of a verdict already reached; a failed
     // question costs the generated code its assertion, never the test.
@@ -115,63 +196,146 @@ async function deriveCodegenChecks(runtime: AgentContext, request: CodegenChecks
   }
 }
 
+/** What an uncovered part that the redactor would alter reads as: the part itself never leaves. */
+const WITHHELD_PART = '(a part of the instruction left out here: it carries a secret)';
+
+/** A part of the instruction as the judge named it, whitespace collapsed; undefined for none. */
+function partOf(part: string | null): string | undefined {
+  const collapsed = part === null ? '' : collapseText(part);
+  return collapsed === '' ? undefined : collapsed;
+}
+
+/** A part reduced to its letters and digits, so `ログイン画面が表示されていて、` and `ログイン画面が表示されていて` compare equal. */
+function squashPart(part: string): string {
+  return part.replaceAll(/[\s\p{P}\p{S}]+/gu, '');
+}
+
+/** The parts in order, each once by its letters and digits, leaving out one another part already holds. */
+function distinctParts(parts: readonly string[]): string[] {
+  const keys = parts.map(squashPart);
+  return parts.filter((_part, index) => {
+    const key = keys[index]!;
+    if (key === '') return false;
+    // The first of equal parts stays; a part inside a longer one adds nothing to it.
+    return keys.every((other, at) => at === index || !other.includes(key) || (other === key && at > index));
+  });
+}
+
+/** A model-written text for a comment: bounded, or undefined when the redactor would alter it or it names a secret. */
+function safeText(text: string, redact: (text: string) => string): string | undefined {
+  const collapsed = collapseText(text);
+  if (collapsed === '' || redact(collapsed) !== collapsed || carriesSecretMarker(collapsed)) return undefined;
+  return bound(collapsed, MAX_GAP_TEXT);
+}
+
+/** An element of an earlier screen as the question lists it: its role and what it reads. */
+function describeElement(target: CodegenTargetDescriptor): string {
+  const reads = target.shownText ?? target.name ?? target.placeholder;
+  return [
+    target.role ?? 'node',
+    ...(reads === undefined ? [] : [JSON.stringify(reads)]),
+    ...(target.testId === undefined ? [] : [`testid=${JSON.stringify(target.testId)}`]),
+  ].join(' ');
+}
+
+/**
+ * A dropped check as the judge proposed it, for the code to show: its kind,
+ * the node by role and name, and its text. Undefined when any of it carries a
+ * secret, so a comment never holds what the redactor caught.
+ */
+function describeProposed(check: ProposedCheck, context: CheckContext): string | undefined {
+  const id = check.node?.replace(/^#/u, '');
+  const node = id === undefined ? undefined : context.observation.nodes.get(id);
+  const earlier = id === undefined ? undefined : context.earlier.get(id);
+  const where =
+    node !== undefined
+      ? [node.role ?? 'node', ...(node.name === undefined || node.name === '' ? [] : [JSON.stringify(collapseText(node.name))])].join(' ')
+      : earlier !== undefined
+        ? describeElement(earlier)
+        : id === undefined
+          ? undefined
+          : `node ${id}`;
+  const parts = [check.kind, ...(where === undefined ? [] : [where]), ...(check.text === null ? [] : [JSON.stringify(collapseText(check.text))])];
+  return safeText(parts.join(' '), context.redact);
+}
+
 /**
  * Holds one proposed check against the observation it was proposed on, and
- * returns it with the node as its durable descriptor; undefined when the
- * screen does not bear it out, the node has nothing durable to find it by, or
- * a text would carry something the redactor masks.
+ * returns it with the node as its durable descriptor, or why it was dropped:
+ * the screen does not bear it out, the node has nothing durable to find it by,
+ * a text would carry something the redactor masks, or an absence proves
+ * nothing because no earlier screen of the test showed the thing.
  */
-function confirmCheck(
-  check: ProposedCheck,
-  observation: Extract<AgentObservation, { kind: 'semantic' }>,
-  instruction: string,
-  redact: (text: string) => string,
-): CodegenCheck | undefined {
+function confirmCheck(check: ProposedCheck, context: CheckContext): Confirmation {
+  const { observation, redact } = context;
   const text = check.text === null ? undefined : collapseText(check.text);
+  if (text !== undefined && redact(text) !== text) return { reason: 'its text carries a secret' };
   // Only a field can be shown to be empty; any other check needs something to look for.
-  if (text !== undefined && ((text === '' && check.kind !== 'value') || redact(text) !== text)) return undefined;
+  if (text === '' && check.kind !== 'value') return { reason: 'it has an empty text' };
   switch (check.kind) {
     case 'url': {
       // The observation shows the model the path; the check keeps the whole
       // location, which the engine writes relative to the app where it can.
       const { location, path } = observation;
-      return text !== undefined && location !== undefined && (text === path || text === location) ? { kind: 'url', location } : undefined;
+      if (text === undefined || location === undefined) return { reason: 'the screen reports no location' };
+      return text === path || text === location ? { check: { kind: 'url', location } } : { reason: 'the location differs' };
     }
-    case 'absent': {
-      // A word the screen never showed proves nothing by being absent: the
-      // check counts only for what the instruction itself says is missing.
-      if (text === undefined || !collapseText(instruction).includes(text)) return undefined;
-      const shown = [...observation.nodes.values()].some((node) => readsOf(node).some((read) => read.includes(text)));
-      return shown ? undefined : { kind: 'absent', text };
+    case 'absent':
+      return confirmAbsent(text, context);
+    case 'gone': {
+      if (observation.truncated) return { reason: 'the screen was not listed whole, so something missing from it proves nothing' };
+      const target = check.node === null ? undefined : context.earlier.get(check.node.replace(/^#/u, ''));
+      return target === undefined ? { reason: 'it names no element listed as shown earlier' } : { check: { kind: 'gone', target } };
     }
     default:
       break;
   }
-  const node = check.node === null ? undefined : observation.nodes.get(check.node.replace(/^#/u, ''));
-  if (node === undefined) return undefined;
+  if (check.node === null) return { reason: 'it names no node' };
+  const node = observation.nodes.get(check.node.replace(/^#/u, ''));
+  if (node === undefined) return { reason: 'no node on the screen has this id' };
   if (check.kind === 'count' || check.kind === 'order') return confirmCollection(check.kind, node, text, observation, redact);
   const target = durableTarget(node.ref.id, observation, redact);
-  if (target === undefined) return undefined;
+  if (target === undefined) return { reason: 'the node has nothing durable to find it by' };
   const states = node.states ?? {};
   switch (check.kind) {
     case 'visible':
-      return { kind: 'visible', target };
+      return { check: { kind: 'visible', target } };
     case 'text':
       // A script reads the text on screen, not a name an author or the engine gave the node.
-      return text !== undefined && shownReadsOf(node).some((read) => read.includes(text)) ? { kind: 'text', target, text } : undefined;
+      if (text === undefined) return { reason: 'it has no text' };
+      return shownReadsOf(node).some((read) => read.includes(text)) ? { check: { kind: 'text', target, text } } : { reason: 'the node does not show this text' };
     case 'value':
-      return text !== undefined && collapseText(node.value ?? '') === text ? { kind: 'value', target, value: text } : undefined;
+      if (text === undefined) return { reason: 'it has no value' };
+      return collapseText(node.value ?? '') === text ? { check: { kind: 'value', target, value: text } } : { reason: 'the field holds another value' };
     case 'checked':
     case 'unchecked': {
       const checked = check.kind === 'checked';
-      return (states.checked === true) === checked ? { kind: 'checked', target, checked } : undefined;
+      return (states.checked === true) === checked ? { check: { kind: 'checked', target, checked } } : { reason: `the node is not ${check.kind}` };
     }
     case 'enabled':
     case 'disabled': {
       const enabled = check.kind === 'enabled';
-      return (states.disabled !== true) === enabled ? { kind: 'enabled', target, enabled } : undefined;
+      return (states.disabled !== true) === enabled ? { check: { kind: 'enabled', target, enabled } } : { reason: `the node is not ${check.kind}` };
     }
   }
+}
+
+/**
+ * An `absent` check, kept only when its absence means something: the
+ * instruction itself says the text is missing, the screen was listed whole and
+ * shows it nowhere, and an earlier screen of the test did show it. A word no
+ * screen of the test ever showed is absent on every screen, so a check for it
+ * could not fail; the word an instruction uses ("the task list") is seldom
+ * what the app shows.
+ */
+function confirmAbsent(text: string | undefined, context: CheckContext): Confirmation {
+  const { observation, instruction, seen } = context;
+  if (text === undefined) return { reason: 'it has no text' };
+  if (observation.truncated) return { reason: 'the screen was not listed whole, so something missing from it proves nothing' };
+  if (!collapseText(instruction).includes(text)) return { reason: 'the instruction does not say this text is missing' };
+  if ([...observation.nodes.values()].some((node) => readsOf(node).some((read) => read.includes(text)))) return { reason: 'the screen shows this text' };
+  if (!seen.showed(text)) return { reason: 'no earlier screen of this test showed this text, so the check could not fail' };
+  return { check: { kind: 'absent', text } };
 }
 
 /** Most items an `order` check lists: past it a list is data, not the point of a check. */
@@ -188,17 +352,21 @@ function confirmCollection(
   text: string | undefined,
   observation: Extract<AgentObservation, { kind: 'semantic' }>,
   redact: (text: string) => string,
-): CodegenCheck | undefined {
+): Confirmation {
   const role = node.role;
-  if (role === undefined) return undefined;
+  if (role === undefined) return { reason: 'the node has no role to count' };
   const items = [...observation.nodes.values()].filter((candidate) => candidate.role === role && candidate.states?.hidden !== true);
   if (kind === 'count') {
-    if (text === undefined || !/^\d+$/u.test(text) || Number(text) !== items.length) return undefined;
-    return { kind: 'count', role, count: items.length };
+    if (text === undefined || !/^\d+$/u.test(text)) return { reason: 'its text is not a number' };
+    return Number(text) === items.length
+      ? { check: { kind: 'count', role, count: items.length } }
+      : { reason: `the screen shows ${String(items.length)} nodes with this role` };
   }
-  if (items.length < 2 || items.length > MAX_ORDER_ITEMS) return undefined;
+  if (items.length < 2 || items.length > MAX_ORDER_ITEMS) return { reason: `the screen shows ${String(items.length)} nodes with this role` };
   const texts = items.map((item) => displayedTextOf(item) || collapseText(item.name ?? ''));
-  return texts.every((item) => item !== '' && redact(item) === item) ? { kind: 'order', role, texts } : undefined;
+  return texts.every((item) => item !== '' && redact(item) === item)
+    ? { check: { kind: 'order', role, texts } }
+    : { reason: 'a node with this role shows no text, or one that carries a secret' };
 }
 
 /**

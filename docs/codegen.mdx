@@ -108,9 +108,7 @@ is not at the URL the e2e target used.
   proposed fact against that screen and keeps only the ones it bears out: a
   node is visible, contains a text, holds a value (an empty one included), is
   checked or enabled; so many nodes of a role are on screen, or they read in
-  a given order; a text is nowhere on screen, or the URL is a path. A text is
-  kept as missing only when the assertion itself says it is missing: a word
-  the screen never showed would pass without proving anything.
+  a given order; the URL is a path; or something is not shown (see below).
 - **`agent.waitFor`** becomes the same `expect` calls with the call's
   `timeout` (30 seconds when it names none). Playwright retries each until
   then, as `waitFor` polled.
@@ -122,6 +120,67 @@ The extra question costs one judge call for each passing judgment, and only
 in a `--codegen` run. It never changes a test's result: when it fails, the
 call is written as a `throw` that names it, and you write the `expect` by
 hand.
+
+### Checking that something is not shown
+
+A check that something is missing proves nothing when it could not have
+failed, so both kinds are kept only for something an earlier screen of the
+same test showed. Every screen an agent step of the test looked at counts,
+an `agent.act` step's included; a screen the test went through with
+`screen` locators alone, with no agent step on it, does not:
+
+- **An element is gone.** The judge is shown the elements earlier screens of
+  the test showed that the current one does not, and can name one. The code
+  counts it zero anywhere on the page, found the way the rest of the code
+  finds a node, so a list row a step added and a later step removed is
+  `await expect(page.getByRole("listitem").filter({ hasText: /^\s*Buy\s*milk\s*$/u })).toHaveCount(0);`.
+  Only an element with something of its own to be found by (a test id, a
+  name, the text it shows, a placeholder) is offered: an unnamed list found by
+  its role alone would make the check fail on any page with another list.
+- **A text is absent.** Kept only when the instruction itself names the text
+  as missing and an earlier screen showed it. A word the instruction uses for
+  what it means ("the task list") is seldom what the app shows, and checking
+  that the page never shows it would pass on every page.
+
+Neither is kept when the screen was listed only in part, since what looks
+missing may be past the cut. Something no earlier screen showed, such as a
+task list that a signed-out user never saw, cannot be checked this way; the
+code says so (see below).
+
+### When the checks prove only part of a judgment
+
+The judge says, for each check, which part of the instruction it proves, and
+names the parts it could turn into no check. A part is left unchecked when the
+judge named it so, or when only a check the runner dropped covered it. The
+code then says so above the checks:
+
+```ts
+// agent.assert: the sign-in form is shown and the task list is not
+// NOTE: the checks below prove only part of this judgment.
+//   The judge's explanation of its verdict (its reasoning, not a checked fact): The Login button is shown and no list is on screen.
+//   Not checked: the task list is not
+//   Dropped absent "Logout": the instruction does not say this text is missing
+await expect(page.getByRole("button", { name: "Login", exact: true })).toBeVisible();
+```
+
+The checks that were kept still run. A dropped check is listed with why, so
+you can add it as an `expect` when you agree with it. Every text in these
+comments comes from the judge and passes through the same redaction as the
+rest of the file; a dropped check whose text would carry a secret is listed
+without its content. A judgment no check could be kept for throws in place of
+the call, with the same comments above the `throw`.
+
+The run ends with a warning that points at each such judgment:
+
+```text
+⚠ --codegen: 1 judgment was only partly converted (.e2e/codegen/web/tests/first.spec.ts:27)
+```
+
+and `report.json` lists them under `run.codegen.gaps`, each with the file and
+line, `partial` or `unconverted`, the test, the instruction, and the parts left
+unchecked, so CI can fail on them.
+
+### How a node is found
 
 A node is found by test id first, then role and accessible name, then
 placeholder, the structural selector, and text. A node that sat in a row,

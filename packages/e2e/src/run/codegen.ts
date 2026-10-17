@@ -17,13 +17,24 @@
 
 import { readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
-import type { RecordableAction } from '../agent/actions.ts';
+import { describeTarget, type RecordableAction } from '../agent/actions.ts';
 import { TraceRecorder } from '../cache/recorder.ts';
 import { bound, MAX_TRACE_DESCRIPTOR_CHARS, type DerivedReason, type RecordedAction } from '../cache/trace.ts';
-import type { RedactedNode } from '../agent/observation.ts';
+import type { AgentObservation, RedactedNode } from '../agent/observation.ts';
+import { relocateDescriptor } from '../cache/relocate.ts';
+import { carriesSecretMarker } from '../internal/redact.ts';
+import { isEditable } from '../internal/roles.ts';
 import { collapseText } from '../internal/text.ts';
 import type { ResolvedConfig } from '../config/resolve.ts';
-import type { CodegenFile, CodegenJudgment, CodegenRecording, CodegenStep, CodegenTest } from '../engine/codegen.ts';
+import type { ReportCodegen } from '../report/build.ts';
+import type {
+  CodegenFile,
+  CodegenJudgment,
+  CodegenRecording,
+  CodegenStep,
+  CodegenTargetDescriptor,
+  CodegenTest,
+} from '../engine/codegen.ts';
 import type { StandardReading } from '../engine/contract.ts';
 import { writeTextReport } from '../report/write.ts';
 import { sanitizePathSegment } from './artifacts.ts';
@@ -110,6 +121,123 @@ interface ActionExtras {
   readonly destination?: CodegenExtras | undefined;
 }
 
+/** Most elements of earlier screens an attempt remembers, the newest kept. */
+const MAX_SEEN_ELEMENTS = 500;
+
+/** Most texts of earlier screens an attempt remembers; past it the oldest go first. */
+const MAX_SEEN_TEXTS = 5000;
+
+/**
+ * What the screens of one attempt showed, for the checks that a judgment's
+ * "is not shown" needs: an element is gone, or a text is absent, only means
+ * something when an earlier screen of the same test showed it. Every screen
+ * counts, an `agent.act` step's and a judgment's alike, by what a script
+ * finds an element by (its descriptor, with no `within` or `position`), since
+ * a node id names a node on one screen only.
+ */
+export class SeenScreens {
+  /** Each element with the screen that last showed it, oldest screen first and in document order within one. */
+  private readonly elements = new Map<string, { readonly target: CodegenTargetDescriptor; readonly screen: number }>();
+  private readonly texts = new Set<string>();
+  private screens = 0;
+
+  /** Remembers one screen: every element a script can find by something of its own, and every text shown. */
+  saw(observation: AgentObservation, redact: (text: string) => string): void {
+    if (observation.kind !== 'semantic') return;
+    const screen = (this.screens += 1);
+    for (const node of observation.nodes.values()) {
+      // A field shows what was typed into it, which a page's text never held;
+      // the field itself, by its label, is an element like any other.
+      const field = isEditable(node) || node.value !== undefined;
+      for (const read of field ? [] : [node.name, node.text]) {
+        const text = read === undefined ? '' : collapseText(read);
+        if (text !== '') remember(this.texts, text, text, MAX_SEEN_TEXTS);
+      }
+      const target = seenTarget(node, redact);
+      if (target !== undefined) remember(this.elements, JSON.stringify(target), { target, screen }, MAX_SEEN_ELEMENTS);
+    }
+  }
+
+  /** Whether an earlier screen showed `text`, as a script finds text: within what a node shows. */
+  showed(text: string): boolean {
+    for (const seen of this.texts) if (seen.includes(text)) return true;
+    return false;
+  }
+
+  /**
+   * The elements earlier screens showed that `observation` does not, at most
+   * `limit`: the newest screen's first, in the order that screen listed them.
+   */
+  goneFrom(observation: Extract<AgentObservation, { kind: 'semantic' }>, limit: number): CodegenTargetDescriptor[] {
+    const ordered = [...this.elements.values()]
+      .map((entry, index) => ({ ...entry, index }))
+      .toSorted((a, b) => b.screen - a.screen || a.index - b.index);
+    const gone: CodegenTargetDescriptor[] = [];
+    for (const { target } of ordered) {
+      if (gone.length >= limit) break;
+      if (!stillShown(target, observation)) gone.push(target);
+    }
+    return gone;
+  }
+}
+
+/** Adds a key to a bounded map or set as its newest entry, dropping the oldest past `max`. */
+function remember<Value>(store: Map<string, Value> | Set<string>, key: string, value: Value, max: number): void {
+  store.delete(key);
+  if (store instanceof Set) store.add(key);
+  else store.set(key, value);
+  if (store.size > max) store.delete(store.keys().next().value!);
+}
+
+/**
+ * A node as a script finds it anywhere on a screen: its descriptor with what
+ * it shows, when the node has a role and something of its own to be found by
+ * (a test id, a name, the text it shows, a placeholder). A role alone, an
+ * unnamed list, finds every node of the role, so its absence says nothing
+ * about the one that was there. Undefined, too, for a node that names a secret.
+ */
+function seenTarget(node: RedactedNode, redact: (text: string) => string): CodegenTargetDescriptor | undefined {
+  const described = describeTarget(node);
+  if (described?.role === undefined) return undefined;
+  // A field's text is what was typed into it: the field is found by its label, whatever it holds.
+  const { within: _within, position: _position, text, ...rest } = described;
+  const descriptor = isEditable(node) || node.value !== undefined || text === undefined ? rest : { ...rest, text };
+  const target: CodegenTargetDescriptor = { ...descriptor, ...codegenExtrasOf(node, redact) };
+  const specific = target.testId ?? target.name ?? target.shownText ?? target.placeholder;
+  if (specific === undefined) return undefined;
+  return Object.values(target).some((value) => typeof value === 'string' && carriesSecretMarker(value)) ? undefined : target;
+}
+
+/**
+ * Whether a screen still has a node a script looking for `target` would find:
+ * e2e's own relocation finds it, or a node of its role reads the same way a
+ * generated locator matches (the same test id, the same name, or the same
+ * shown text, whitespace aside). Either one keeps a "gone" check from being
+ * written, since it would fail on this very screen.
+ */
+function stillShown(target: CodegenTargetDescriptor, observation: Extract<AgentObservation, { kind: 'semantic' }>): boolean {
+  const relocated = relocateDescriptor(target, observation.nodes);
+  if (relocated.kind === 'found' || relocated.failure === 'target-ambiguous') return true;
+  const name = target.standard?.name ?? target.name;
+  const shown = target.shownText === undefined ? undefined : squashed(target.shownText);
+  for (const node of observation.nodes.values()) {
+    if (target.testId !== undefined && node.testId !== undefined && collapseText(node.testId) === target.testId) return true;
+    if (node.role !== target.role) continue;
+    if (name !== undefined && name !== '' && collapseText(node.standard?.name ?? node.name ?? '') === name) return true;
+    if (target.placeholder !== undefined && collapseText(node.attributes?.['placeholder'] ?? '') === target.placeholder) return true;
+    if (shown !== undefined) {
+      const reads = squashed(displayedTextOf(node));
+      if (shown.endsWith('…') ? reads.startsWith(shown.slice(0, -1)) : reads === shown) return true;
+    }
+  }
+  return false;
+}
+
+/** A text with its whitespace removed, as a locator that takes the whitespace between words as optional compares it. */
+function squashed(text: string): string {
+  return text.replaceAll(/\s+/gu, '');
+}
+
 /** The recording of one attempt's `agent.act` steps. */
 export class CodegenLog {
   private readonly steps = new Map<
@@ -117,6 +245,8 @@ export class CodegenLog {
     { readonly recorder: TraceRecorder; startLocation: string | undefined; readonly extras: Map<number, ActionExtras> }
   >();
   private readonly judgments = new Map<string, CodegenJudgment>();
+  /** What the attempt's screens showed, oldest first. */
+  readonly seen = new SeenScreens();
 
   constructor(readonly attemptId: string) {}
 
@@ -186,6 +316,29 @@ export interface CodegenOutput {
   readonly files: readonly string[];
   /** Targets with passing tests whose engine declares no `codegen`. */
   readonly unsupported: readonly { readonly target: string; readonly engine: string }[];
+  /** The judgments the code does not prove whole, in write order. */
+  readonly gaps: readonly CodegenGapRecord[];
+}
+
+/**
+ * One judgment the generated code does not prove whole: `partial` when its
+ * checks prove only some of it, `unconverted` when no check could be kept and
+ * the code throws in its place.
+ */
+export interface CodegenGapRecord {
+  /** The written file, project-root relative with `/` separators. */
+  readonly file: string;
+  /** The one-based line of the file the judgment starts at. */
+  readonly line: number;
+  readonly kind: 'partial' | 'unconverted';
+  /** The e2e test file the judgment ran in, project-root relative. */
+  readonly source: string;
+  readonly test: string;
+  readonly api: string;
+  /** The judgment's instruction, as the report labels the step. */
+  readonly instruction: string;
+  /** The parts of the instruction the code does not check, as the judge named them. */
+  readonly uncovered: readonly string[];
 }
 
 /** One test on its way to a file: its target, file, and steps. */
@@ -238,6 +391,7 @@ export class CodegenCollector {
       groups.set(key, group);
     }
     const files: string[] = [];
+    const gaps: CodegenGapRecord[] = [];
     const unsupported = new Map<string, string>();
     for (const group of groups.values()) {
       const first = group[0]!;
@@ -261,11 +415,58 @@ export class CodegenCollector {
         tests: uniqueTests(ordered),
       };
       const output = path.join(dir, sanitizePathSegment(target.name), ...outputSegments(file.file, codegen.extension));
-      await writeTextReport(output, codegen.render(file));
+      const rendered = codegen.render(file);
+      await writeTextReport(output, rendered.code);
       files.push(output);
+      const written = path.relative(config.projectRoot, output).split(path.sep).join('/');
+      for (const site of rendered.gaps) {
+        const test = file.tests[site.test];
+        const step = test?.steps[site.step];
+        const gap = step?.judgment?.gap;
+        if (test === undefined || step === undefined || gap === undefined) continue;
+        gaps.push({
+          file: written,
+          line: site.line,
+          kind: (step.judgment?.checks.length ?? 0) === 0 ? 'unconverted' : 'partial',
+          source: file.file,
+          test: test.title,
+          api: step.api,
+          instruction: step.label,
+          uncovered: gap.uncovered,
+        });
+      }
     }
-    return { dir, files, unsupported: [...unsupported].map(([targetName, engine]) => ({ target: targetName, engine })) };
+    return { dir, files, unsupported: [...unsupported].map(([targetName, engine]) => ({ target: targetName, engine })), gaps };
   }
+}
+
+/** The report's `run.codegen` block for what a write produced, its paths project-root relative. */
+export function reportCodegen(output: CodegenOutput, projectRoot: string): ReportCodegen {
+  const relative = (file: string): string => path.relative(projectRoot, file).split(path.sep).join('/') || '.';
+  return { dir: relative(output.dir), files: output.files.map(relative), gaps: output.gaps };
+}
+
+/** Most file locations one warning lists; the rest are counted. */
+const MAX_WARNED_LOCATIONS = 5;
+
+/**
+ * The warnings a run prints for the judgments its code does not prove whole:
+ * one line for those only partly converted, one for those not converted at
+ * all, each naming where they are in the written files.
+ */
+export function codegenGapWarnings(gaps: readonly CodegenGapRecord[]): string[] {
+  const line = (kind: CodegenGapRecord['kind'], says: (count: number) => string): string[] => {
+    const matching = gaps.filter((gap) => gap.kind === kind);
+    if (matching.length === 0) return [];
+    const locations = matching.slice(0, MAX_WARNED_LOCATIONS).map((gap) => `${gap.file}:${String(gap.line)}`);
+    const more = matching.length - locations.length;
+    return [`--codegen: ${says(matching.length)} (${locations.join(', ')}${more > 0 ? `, and ${String(more)} more` : ''})`];
+  };
+  const judgments = (count: number): string => `${String(count)} ${count === 1 ? 'judgment was' : 'judgments were'}`;
+  return [
+    ...line('partial', (count) => `${judgments(count)} only partly converted`),
+    ...line('unconverted', (count) => `${judgments(count)} not converted; the code throws in place of each`),
+  ];
 }
 
 /**

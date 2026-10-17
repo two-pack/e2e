@@ -34,7 +34,7 @@ import {
 } from '../internal/errors.ts';
 import { loadAiSdk } from '../agent/ai-sdk.ts';
 import { AiTraceCollector, AiTraceRecorder, registerAiTraceRecorder } from '../internal/ai-trace.ts';
-import { CodegenCollector, type CodegenOutput } from './codegen.ts';
+import { CodegenCollector, codegenGapWarnings, reportCodegen, type CodegenOutput } from './codegen.ts';
 import { DebugTrace } from '../internal/debug.ts';
 import { resultId, timestamp, uuidv7 } from '../internal/ids.ts';
 import type { ExploreProgress } from '../explore/progress.ts';
@@ -532,7 +532,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
   // among them, and the files it could not collect: what a rerun can still
   // carry when the report lists no row.
   let rerunCollection: RerunCollection = { testIds: new Set(), uncollectedFiles: new Set() };
-  const buildRunReport = (exitCode: RunExitCode): Report1Document => {
+  const buildRunReport = (exitCode: RunExitCode, codegenOutput?: CodegenOutput): Report1Document => {
     const document = buildReport({
       runId,
       config: loaded.config,
@@ -545,6 +545,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       runErrors,
       targetProvenance,
       explore: options.tests?.explore?.snapshot(),
+      codegen: codegenOutput === undefined || loaded.config === undefined ? undefined : reportCodegen(codegenOutput, loaded.config.projectRoot),
     });
     const carried = lastRun === undefined ? undefined : carryForward(lastRun, document, rerunCollection);
     return carried === undefined ? document : { ...document, run: { ...document.run, carried } };
@@ -640,6 +641,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       for (const { target, engine } of output.unsupported) {
         notice(target, `--codegen wrote no code for target "${target}": engine "${engine}" declares no codegen`);
       }
+      for (const message of codegenGapWarnings(output.gaps)) emit({ type: 'notice', target: 'run', message, level: 'warning' });
       return output;
     } catch (cause) {
       recordFailure(
@@ -666,12 +668,12 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
     // One document: what is written is what the reporters and the outcome
     // see, so a reporter uploading `report` ships the file byte for byte.
     // Only a failed write, itself a run error, forces a rebuild that records it.
-    const document = buildRunReport(currentExitCode());
+    const document = buildRunReport(currentExitCode(), codegenOutput);
     const recorded = runErrors.length;
     const reportPath = written === undefined ? undefined : await writeCanonicalReport(written, document);
     const traces = written === undefined ? new Map<string, string>() : await writeTraces(written, document);
     const exitCode = currentExitCode();
-    const report = runErrors.length === recorded ? document : buildRunReport(exitCode);
+    const report = runErrors.length === recorded ? document : buildRunReport(exitCode, codegenOutput);
     // Read back from the report rather than recomputed: the report derives
     // `blocked` from the results, and the outcome and the event must agree
     // with the file a host reads afterwards.

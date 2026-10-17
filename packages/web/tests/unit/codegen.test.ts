@@ -37,7 +37,7 @@ function judgedFile(api: string, checks: readonly CodegenCheck[], value?: unknow
 }
 
 function render(file: CodegenFile, testIdAttribute?: string): string {
-  return playwrightCodegen(testIdAttribute).render(file);
+  return playwrightCodegen(testIdAttribute).render(file).code;
 }
 
 describe('playwright codegen statements', () => {
@@ -241,6 +241,49 @@ describe('playwright codegen statements', () => {
     expect(render(judgedFile('agent.assert', []))).toContain('// TODO: no deterministic check could be derived');
   });
 
+  it('writes a gone check as the earlier element counting zero, found anywhere on the page', () => {
+    const row = { role: 'listitem', name: '資料を作る', shownText: '資料を作る', standard: { name: '' } };
+    expect(render(judgedFile('agent.assert', [{ kind: 'gone', target: row }]))).toContain(
+      'await expect(page.getByRole("listitem").filter({ hasText: /^\\s*資料を作る\\s*$/u })).toHaveCount(0);',
+    );
+    expect(render(judgedFile('agent.waitFor', [{ kind: 'gone', target: { role: 'button', name: 'Logout' } }]))).toContain(
+      'await expect(page.getByRole("button", { name: "Logout", exact: true })).toHaveCount(0, { timeout: 30_000 });',
+    );
+  });
+
+  it('says above the checks what they leave unproven, and returns the line of every judgment with a gap', () => {
+    const gap = {
+      explanation: 'The login form shows and no list is on screen.\nNo task is listed.',
+      uncovered: ['タスクの一覧は表示されていない'],
+      dropped: [{ check: 'absent "Logout"', reason: 'the instruction does not say this text is missing' }, { reason: 'its text carries a secret' }],
+    };
+    const file: CodegenFile = {
+      ...judgedFile('agent.assert', [{ kind: 'visible', target: { role: 'button', name: 'Login' } }]),
+    };
+    const withGap: CodegenFile = { ...file, tests: [{ ...file.tests[0]!, steps: [{ ...file.tests[0]!.steps[0]!, judgment: { ...file.tests[0]!.steps[0]!.judgment!, gap } }] }] };
+    const rendered = playwrightCodegen(undefined).render(withGap);
+    expect(rendered.code).toContain(
+      [
+        '  // agent.assert: the order is confirmed',
+        '  // NOTE: the checks below prove only part of this judgment.',
+        "  //   The judge's explanation of its verdict (its reasoning, not a checked fact): The login form shows and no list is on screen. No task is listed.",
+        '  //   Not checked: タスクの一覧は表示されていない',
+        '  //   Dropped absent "Logout": the instruction does not say this text is missing',
+        '  //   Dropped a check whose content is withheld: its text carries a secret',
+        '  await expect(page.getByRole("button", { name: "Login", exact: true })).toBeVisible();',
+      ].join('\n'),
+    );
+    expect(rendered.code).not.toContain('\u0000');
+    const lines = rendered.code.split('\n');
+    expect(rendered.gaps).toEqual([{ test: 0, step: 0, line: lines.indexOf('  // agent.assert: the order is confirmed') + 1 }]);
+    expect(playwrightCodegen(undefined).render(file).gaps).toEqual([]);
+
+    const unconverted: CodegenFile = { ...file, tests: [{ ...file.tests[0]!, steps: [{ ...file.tests[0]!.steps[0]!, judgment: { checks: [], gap } }] }] };
+    const thrown = playwrightCodegen(undefined).render(unconverted);
+    expect(thrown.code).toContain('// TODO: no deterministic check could be derived from the screen this judgment passed on.\n  //   The judge');
+    expect(thrown.gaps).toHaveLength(1);
+  });
+
   it('nests describes from the title path and keeps the steps the run did not record as comments in their place', () => {
     const file: CodegenFile = {
       file: 'tests/shop.e2e.ts',
@@ -441,6 +484,26 @@ describe('playwright codegen from the test source', () => {
     const code = convert(source, []);
     expect(code).toContain('  // agent.act(login)\n  // TODO: no passing run reached this call');
     expect(code).toContain('  throw new Error(`agent.act(${JSON.stringify(login)}) was not recorded by e2e run --codegen`);');
+  });
+
+  it('marks a judgment with a gap where the converted source has it, and reports its line', () => {
+    const gap = { explanation: 'The cart shows one hat.', uncovered: ['nothing else is in the cart'], dropped: [] };
+    const tests = [{ ...CONVERTED_TEST, steps: CONVERTED_TEST.steps.map((recorded) => (recorded.api === 'agent.assert' ? { ...recorded, judgment: { ...recorded.judgment!, gap } } : recorded)) }];
+    const rendered = playwrightCodegen(undefined).render({ file: 'tests/checkout.e2e.ts', target: 'web', appUrl: APP_URL, source: SOURCE, tests });
+    const lines = rendered.code.split('\n');
+    const header = lines.findIndex((line) => line.trim() === '// agent.assert: the cart holds one hat');
+    expect(lines[header + 1]?.trim()).toBe('// NOTE: the checks below prove only part of this judgment.');
+    expect(lines[header + 3]?.trim()).toBe('//   Not checked: nothing else is in the cart');
+    const assertIndex = tests[0]!.steps.findIndex((recorded) => recorded.api === 'agent.assert');
+    expect(rendered.gaps).toEqual([{ test: 0, step: assertIndex, line: header + 1 }]);
+  });
+
+  it('keeps a call the code does not await on the spot a promise', () => {
+    const source = `import { test } from '@e2e-dev/web';\n\ntest('buys a hat', async ({ agent }) => {\n  await agent.assert('the cart holds one hat').catch(() => undefined);\n});\n`;
+    const code = convert(source, [
+      { title: 'buys a hat', titlePath: ['buys a hat'], steps: [step('agent.assert', 'the cart holds one hat', 4, { judgment: { checks: [{ kind: 'visible', target: { role: 'status', name: 'Cart' } }] } })] },
+    ]);
+    expect(code).toContain('  await expect(page.getByRole("status", { name: "Cart", exact: true })).toBeVisible();\n  await Promise.resolve().catch(() => undefined);');
   });
 
   it('falls back to the recorded steps when the source does not parse', () => {

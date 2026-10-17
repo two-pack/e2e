@@ -250,6 +250,7 @@ export class Invocation {
     }
     this.observationRevision = observation.revision;
     if (pixels || observation.kind === 'pixels') this.recordPixels(observation);
+    this.runtime.codegen?.seen.saw(observation, this.runtime.redact);
     return observation;
   }
 

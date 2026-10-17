@@ -168,7 +168,8 @@ export async function dispatchAgentStep(
         throw dispatch.settleThrown(error);
       }
       const evidence = await dispatch.captureEvidence();
-      dispatch.settle(validateVerdict(verdict, agent.executor.name), evidence);
+      const validated = validateVerdict(verdict, agent.executor.name);
+      dispatch.settle(validated, evidence);
       if (spec.kind === 'assert') {
         // The executor judged with its own look at the screen; the checks are
         // derived from a fresh one, taken once the verdict passed.
@@ -177,6 +178,7 @@ export async function dispatchAgentStep(
           agent: raw.agent,
           instruction: spec.instruction,
           observation: undefined,
+          explanation: validated.summary,
           timeoutMs: agent.config.judgmentTimeout,
         });
       }

@@ -175,7 +175,13 @@ const MAX_CHECK_TEXT = 200;
 /** Longest node id a check names. */
 const MAX_CHECK_NODE = 32;
 
-const CHECK_KINDS = ['visible', 'text', 'value', 'checked', 'unchecked', 'enabled', 'disabled', 'count', 'order', 'absent', 'url'] as const;
+/** Longest part of the instruction a check says it covers, or one the judge could not cover, in code points. */
+const MAX_CHECK_PART = 200;
+
+/** Most parts of the instruction the judge can list as left uncovered. */
+const MAX_UNCOVERED = MAX_CHECKS;
+
+const CHECK_KINDS = ['visible', 'text', 'value', 'checked', 'unchecked', 'enabled', 'disabled', 'count', 'order', 'absent', 'gone', 'url'] as const;
 
 type CheckKind = (typeof CHECK_KINDS)[number];
 
@@ -184,13 +190,21 @@ export interface ProposedCheck {
   readonly kind: CheckKind;
   readonly node: string | null;
   readonly text: string | null;
+  /** The part of the instruction the judge says the check proves, or null. */
+  readonly covers: string | null;
+}
+
+/** The judge's answer: the checks, and the parts of the instruction it could not turn into one. */
+export interface ProposedChecks {
+  readonly checks: readonly ProposedCheck[];
+  readonly uncovered: readonly string[];
 }
 
 /** The provider-facing `agent-codegen-checks-1` grammar: every field required, the unused ones nullable, as strict providers need. */
 export const CHECKS_SCHEMA: JSONSchema7 = {
   type: 'object',
   additionalProperties: false,
-  required: ['checks'],
+  required: ['checks', 'uncovered'],
   properties: {
     checks: {
       type: 'array',
@@ -198,37 +212,57 @@ export const CHECKS_SCHEMA: JSONSchema7 = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['kind', 'node', 'text'],
+        required: ['kind', 'node', 'text', 'covers'],
         properties: {
           kind: { type: 'string', enum: [...CHECK_KINDS] },
           node: { type: ['string', 'null'], maxLength: MAX_CHECK_NODE },
           text: { type: ['string', 'null'], maxLength: MAX_CHECK_TEXT },
+          covers: { type: ['string', 'null'], maxLength: MAX_CHECK_PART },
         },
       },
+    },
+    uncovered: {
+      type: 'array',
+      maxItems: MAX_UNCOVERED,
+      items: { type: 'string', maxLength: MAX_CHECK_PART },
     },
   },
 };
 
-export function validateChecksResponse(value: unknown): ProtocolValidation<readonly ProposedCheck[]> {
-  const record = asClosedRecord(value, ['checks']);
-  if (record === null) return fail('response is not an agent-codegen-checks-1 object');
+export function validateChecksResponse(value: unknown): ProtocolValidation<ProposedChecks> {
+  const record = asClosedRecord(value, ['checks', 'uncovered']);
+  if (record === null || !('checks' in record) || !('uncovered' in record)) {
+    return fail('response is not an agent-codegen-checks-1 object with checks and uncovered');
+  }
   const checks = record['checks'];
   if (!Array.isArray(checks) || checks.length > MAX_CHECKS) return fail(`checks must be an array of at most ${String(MAX_CHECKS)}`);
   const proposed: ProposedCheck[] = [];
   for (const item of checks as unknown[]) {
-    const check = asClosedRecord(item, ['kind', 'node', 'text']);
-    if (check === null || !('kind' in check) || !('node' in check) || !('text' in check)) {
-      return fail('each check must be { kind, node, text }');
+    const check = asClosedRecord(item, ['kind', 'node', 'text', 'covers']);
+    if (check === null || !('kind' in check) || !('node' in check) || !('text' in check) || !('covers' in check)) {
+      return fail('each check must be { kind, node, text, covers }');
     }
-    const { kind, node, text } = check;
+    const { kind, node, text, covers } = check;
     if (!CHECK_KINDS.some((known) => known === kind)) return fail(`kind must be one of ${CHECK_KINDS.join(', ')}`);
     const nodeId = node === null ? null : asBoundedString(node, 0, MAX_CHECK_NODE);
     if (node !== null && nodeId === null) return fail('node must be a node id or null');
     const bounded = text === null ? null : asBoundedString(text, 0, MAX_CHECK_TEXT);
     if (text !== null && bounded === null) return fail('text must be a short string or null');
-    proposed.push({ kind: kind as CheckKind, node: nodeId, text: bounded });
+    const part = covers === null ? null : asBoundedString(covers, 0, MAX_CHECK_PART);
+    if (covers !== null && part === null) return fail('covers must be a short string or null');
+    proposed.push({ kind: kind as CheckKind, node: nodeId, text: bounded, covers: part });
   }
-  return { ok: true, value: proposed };
+  const uncovered = record['uncovered'];
+  if (!Array.isArray(uncovered) || uncovered.length > MAX_UNCOVERED) {
+    return fail(`uncovered must be an array of at most ${String(MAX_UNCOVERED)}`);
+  }
+  const parts: string[] = [];
+  for (const item of uncovered as unknown[]) {
+    const part = asBoundedString(item, 0, MAX_CHECK_PART);
+    if (part === null) return fail('each uncovered part must be a short string');
+    parts.push(part);
+  }
+  return { ok: true, value: { checks: proposed, uncovered: parts } };
 }
 
 function fail(issue: string): { ok: false; issue: string } {

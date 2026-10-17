@@ -6,7 +6,7 @@
  * step-list fallback (`codegen.ts`).
  */
 
-import type { CodegenAction, CodegenCheck, CodegenTargetDescriptor } from 'e2e/engine';
+import type { CodegenAction, CodegenCheck, CodegenJudgmentGap, CodegenTargetDescriptor } from 'e2e/engine';
 
 /** The roles `page.getByRole` takes that the engine's tree also reports; anything else falls back to text or selector. */
 const ARIA_ROLES: ReadonlySet<string> = new Set([
@@ -171,6 +171,8 @@ export class StatementWriter {
       }
       case 'absent':
         return `await expect(page.getByText(${textMatcher(check.text)})).toHaveCount(${withOptions('0')});`;
+      case 'gone':
+        return `await expect(${this.locator(check.target)}).toHaveCount(${withOptions('0')});`;
       case 'url':
         return `await expect(page).toHaveURL(${withOptions(literal(this.relative(check.location)))});`;
     }
@@ -267,6 +269,53 @@ export class StatementWriter {
       ...(this.needs.within ? ['import type { Locator, Page } from "@playwright/test";'] : []),
     ];
   }
+}
+
+/**
+ * The comment lines that say what a judgment's checks leave unproven, for
+ * above them: the judge's explanation, marked as its reasoning rather than a
+ * fact the code checks, the parts of the instruction left unchecked, and the
+ * checks dropped with why, which a reader who agrees can add as an `expect`.
+ * `converted` is false for a judgment with no checks, which throws instead.
+ */
+export function gapComments(gap: CodegenJudgmentGap, converted: boolean): string[] {
+  return [
+    converted
+      ? '// NOTE: the checks below prove only part of this judgment.'
+      : '// NOTE: no check below proves this judgment.',
+    ...(gap.explanation === undefined ? [] : [`//   The judge's explanation of its verdict (its reasoning, not a checked fact): ${commentText(gap.explanation)}`]),
+    ...gap.uncovered.map((part) => `//   Not checked: ${commentText(part)}`),
+    ...gap.dropped.map(({ check, reason }) => `//   Dropped ${check === undefined ? 'a check whose content is withheld' : commentText(check)}: ${commentText(reason)}`),
+  ];
+}
+
+/** Model-written text on one comment line: whitespace collapsed and control characters dropped. */
+function commentText(text: string): string {
+  return oneLine(text.replaceAll(/\p{Cc}/gu, ' '));
+}
+
+/** Marks a line as the start of a judgment with a gap, for `takeGapLines` to find once the file is whole. */
+export function gapMarker(index: number): string {
+  return `${GAP_MARKER}${String(index)}${GAP_MARKER}`;
+}
+
+/** A character no source text or literal written here holds: the marker's delimiter. */
+const GAP_MARKER = '\u0000';
+
+/**
+ * Removes the `gapMarker`s from a written file, and returns it with the
+ * one-based line each marker stood on, by its index.
+ */
+export function takeGapLines(code: string): { readonly code: string; readonly lines: ReadonlyMap<number, number> } {
+  const lines = new Map<number, number>();
+  const pattern = new RegExp(`${GAP_MARKER}(\\d+)${GAP_MARKER}`, 'gu');
+  const written = code.split('\n').map((line, index) =>
+    line.replaceAll(pattern, (_marker, marked: string) => {
+      lines.set(Number(marked), index + 1);
+      return '';
+    }),
+  );
+  return { code: written.join('\n'), lines };
 }
 
 /** Icon-font glyphs: private-use code points, which render as a picture and read as no word. */

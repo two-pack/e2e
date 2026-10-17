@@ -170,6 +170,7 @@ export function createAgentFixture(runtime: AgentContext): Agent {
                 agent: options?.agent,
                 instruction: condition,
                 observation,
+                explanation: judgment.explanation,
                 timeoutMs: config.judgmentTimeout,
               });
               return;
@@ -295,6 +296,7 @@ export function createAgentFixture(runtime: AgentContext): Agent {
               agent: options?.agent,
               instruction: assertion,
               observation,
+              explanation: judgment.explanation,
               timeoutMs: config.judgmentTimeout,
             });
             return;

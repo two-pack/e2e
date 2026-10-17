@@ -19,3 +19,12 @@ names: the web engine's nodes now carry `standard`, the standard's reading
 where e2e reads a node its own way for the model, and the code is written from
 it (a list row e2e named from its content by the text it shows, a name with
 its icon glyph, an editor's host by its label).
+
+A check that something is not shown counts only for what an earlier screen
+of the same test showed: an element gone (`toHaveCount(0)` on its locator) or
+a text absent. The judge also says which part of the instruction each check
+proves and which it could not check; a judgment the kept checks prove only in
+part gets a `NOTE` comment with the judge's explanation, the unchecked parts,
+and the dropped checks with why, a closing warning naming its line, and an
+entry under `run.codegen.gaps` in the report. `render` returns the code with
+those lines, and a `notice` event can carry `level: 'warning'`.
