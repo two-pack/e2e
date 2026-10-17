@@ -204,8 +204,24 @@ export interface SemanticNode {
    * outermost first. Absent for nodes in the main document.
    */
   readonly framePath?: readonly string[];
+  /**
+   * How the platform's standard reads this node where the engine reports it
+   * its own way for the model (a list row named from its content, an icon
+   * glyph dropped from a name, an editor's host read as a textbox): what code
+   * written in the platform's own terms finds it by (`e2e run --codegen`).
+   * Absent where the two agree. Never shown to the model.
+   */
+  readonly standard?: StandardReading;
   /** Child nodes. */
   readonly children?: readonly SemanticNode[];
+}
+
+/** The platform standard's reading of a node, field by field where it differs from the engine's report. */
+export interface StandardReading {
+  /** The role the standard gives the node; `null` for none. */
+  readonly role?: string | null;
+  /** The accessible name the standard computes, as written (icon glyphs kept); `''` for none. */
+  readonly name?: string;
 }
 
 /**

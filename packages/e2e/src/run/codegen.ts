@@ -24,6 +24,7 @@ import type { RedactedNode } from '../agent/observation.ts';
 import { collapseText } from '../internal/text.ts';
 import type { ResolvedConfig } from '../config/resolve.ts';
 import type { CodegenFile, CodegenJudgment, CodegenRecording, CodegenStep, CodegenTest } from '../engine/codegen.ts';
+import type { StandardReading } from '../engine/contract.ts';
 import { writeTextReport } from '../report/write.ts';
 import { sanitizePathSegment } from './artifacts.ts';
 import { outputLayout } from './output.ts';
@@ -70,46 +71,50 @@ export function displayedTextOf(node: RedactedNode): string {
 }
 
 /**
- * A node's name as its content makes it: its own text, then each child's
- * name, or the content name of a child with none, joined in order.
+ * What a node shows, kept when the platform's standard gives it no name
+ * (`standard.name` is `''`) and the engine named it anyway: from its content
+ * (a list row by its children's names, a button's label among them), which a
+ * script reading the page finds no trace of, while the text shown is there.
+ * Undefined otherwise, for nothing shown, or for text the redactor alters.
  */
-function contentNameOf(node: RedactedNode): string {
-  const children = (node.children ?? []).map((child) => collapseText(child.name ?? '') || contentNameOf(child));
-  return collapseText([node.text ?? '', ...children].join(' '));
-}
-
-/**
- * What a node shows, kept when its name is the one its content makes rather
- * than one an author gave: an engine that names a list row from its children
- * (its title, a button's label) gives a name a script reading the page finds
- * no trace of, while the text shown is there. Undefined for an author's name,
- * for nothing shown, or for text the redactor would alter. An engine's code
- * generation reads its presence as "the name came from the content".
- */
-export function shownTextOf(node: RedactedNode | undefined, redact: (text: string) => string): string | undefined {
-  if (node === undefined) return undefined;
-  const name = collapseText(node.name ?? '');
-  if (name === '') return undefined;
-  const content = contentNameOf(node);
-  // A name cut at the engine's limit ends in an ellipsis; its content only has to begin the same.
-  const fromContent = name.endsWith('…') ? content.startsWith(name.slice(0, -1)) : content === name;
-  if (!fromContent) return undefined;
+function shownTextOf(node: RedactedNode | undefined, redact: (text: string) => string): string | undefined {
+  if (node === undefined || node.standard?.name !== '' || collapseText(node.name ?? '') === '') return undefined;
   const shown = displayedTextOf(node);
   if (shown === '' || redact(shown) !== shown) return undefined;
   return bound(shown, MAX_SHOWN_TEXT_CHARS);
 }
 
-/** What a step's actions showed, by the index of the recorded action: the target's and a drag destination's. */
-interface ShownTexts {
-  readonly target?: string | undefined;
-  readonly destination?: string | undefined;
+/** What `--codegen` keeps beside a node's descriptor: what it shows, and how the standard reads it. */
+export interface CodegenExtras {
+  readonly shownText?: string;
+  readonly standard?: StandardReading;
+}
+
+/** The extras for one node; undefined when it has none. */
+export function codegenExtrasOf(node: RedactedNode | undefined, redact: (text: string) => string): CodegenExtras | undefined {
+  if (node === undefined) return undefined;
+  const shownText = shownTextOf(node, redact);
+  const standard =
+    node.standard === undefined
+      ? undefined
+      : node.standard.name === undefined
+        ? node.standard
+        : { ...node.standard, name: bound(redact(node.standard.name), MAX_SHOWN_TEXT_CHARS) };
+  if (shownText === undefined && standard === undefined) return undefined;
+  return { ...(shownText === undefined ? {} : { shownText }), ...(standard === undefined ? {} : { standard }) };
+}
+
+/** A recorded action's extras, by the index of the action: the target's and a drag destination's. */
+interface ActionExtras {
+  readonly target?: CodegenExtras | undefined;
+  readonly destination?: CodegenExtras | undefined;
 }
 
 /** The recording of one attempt's `agent.act` steps. */
 export class CodegenLog {
   private readonly steps = new Map<
     string,
-    { readonly recorder: TraceRecorder; startLocation: string | undefined; readonly shown: Map<number, ShownTexts> }
+    { readonly recorder: TraceRecorder; startLocation: string | undefined; readonly extras: Map<number, ActionExtras> }
   >();
   private readonly judgments = new Map<string, CodegenJudgment>();
 
@@ -121,7 +126,7 @@ export class CodegenLog {
    * the ledger would alter is masked and the recording marked incomplete.
    */
   open(stepId: string, redaction: { readonly redact: (text: string) => string; readonly redactCut: (text: string) => string }): CodegenStepRecorder {
-    const step = { recorder: new TraceRecorder(redaction), startLocation: undefined as string | undefined, shown: new Map<number, ShownTexts>() };
+    const step = { recorder: new TraceRecorder(redaction), startLocation: undefined as string | undefined, extras: new Map<number, ActionExtras>() };
     this.steps.set(stepId, step);
     return {
       record: (action, location) => {
@@ -130,9 +135,9 @@ export class CodegenLog {
         step.recorder.record(action);
         // A scroll folded into the one before it, or an action over the cap, added no entry.
         if (step.recorder.recordedCount !== index + 1) return;
-        const target = shownTextOf('node' in action ? action.node : undefined, redaction.redact);
-        const destination = action.name === 'drag' ? shownTextOf(action.destination.node, redaction.redact) : undefined;
-        if (target !== undefined || destination !== undefined) step.shown.set(index, { target, destination });
+        const target = codegenExtrasOf('node' in action ? action.node : undefined, redaction.redact);
+        const destination = action.name === 'drag' ? codegenExtrasOf(action.destination.node, redaction.redact) : undefined;
+        if (target !== undefined || destination !== undefined) step.extras.set(index, { target, destination });
       },
       recordGap: (toolName) => step.recorder.recordGap(toolName),
       recordDerivedGap: (reason) => step.recorder.recordDerivedGap(reason),
@@ -147,12 +152,12 @@ export class CodegenLog {
   /** The act steps that committed at least one action and the judgments that passed, by step id. */
   snapshot(): CodegenAttempt {
     const steps: Record<string, CodegenStepData> = {};
-    for (const [stepId, { recorder, startLocation, shown }] of this.steps) {
+    for (const [stepId, { recorder, startLocation, extras }] of this.steps) {
       if (recorder.recordedCount === 0) continue;
       steps[stepId] = {
         recording: {
           ...(startLocation === undefined ? {} : { startLocation }),
-          actions: recorder.recorded.map((action, index) => withShownText(action, shown.get(index))),
+          actions: recorder.recorded.map((action, index) => withExtras(action, extras.get(index))),
           incomplete: recorder.incomplete,
         },
       };
@@ -162,12 +167,12 @@ export class CodegenLog {
   }
 }
 
-/** A recorded action with what its nodes showed added to their descriptors. */
-function withShownText(action: RecordedAction, shown: ShownTexts | undefined): RecordedAction {
-  if (shown === undefined || !('target' in action) || action.target === undefined) return action;
-  const target = shown.target === undefined ? action.target : { ...action.target, shownText: shown.target };
+/** A recorded action with its nodes' extras added to their descriptors. */
+function withExtras(action: RecordedAction, extras: ActionExtras | undefined): RecordedAction {
+  if (extras === undefined || !('target' in action) || action.target === undefined) return action;
+  const target = extras.target === undefined ? action.target : { ...action.target, ...extras.target };
   if (action.name === 'drag') {
-    const destination = shown.destination === undefined ? action.destination : { ...action.destination, shownText: shown.destination };
+    const destination = extras.destination === undefined ? action.destination : { ...action.destination, ...extras.destination };
     return { ...action, target, destination };
   }
   return { ...action, target };

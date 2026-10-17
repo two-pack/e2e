@@ -100,7 +100,7 @@ describe('playwright codegen statements', () => {
   it('finds a node e2e named from its content by what it shows, one the author named by its name, and a frame by its title', () => {
     const code = render(
       actFile([
-        { name: 'tap', summary: '1', target: { role: 'listitem', name: '資料を作る', shownText: '資料を作る' } as CodegenTargetDescriptor },
+        { name: 'tap', summary: '1', target: { role: 'listitem', name: '資料を作る', shownText: '資料を作る', standard: { name: '' } } as CodegenTargetDescriptor },
         {
           name: 'tap',
           summary: '2',
@@ -119,6 +119,28 @@ describe('playwright codegen statements', () => {
     expect(code).toContain('await page.locator("iframe[title=\\"checkout-frame\\"], iframe[aria-label=\\"checkout-frame\\"]").click();');
     expect(code).toContain('await page.getByRole("alert").filter({ hasText: /^\\s*xxxxxxxxxx/u }).click();');
     expect(code).not.toContain('.or(');
+  });
+
+  it("writes the standard's reading where e2e reads a node its own way", () => {
+    const code = render(
+      actFile([
+        { name: 'type', summary: '1', target: { role: 'textbox', name: 'Editor', standard: { role: null } } as CodegenTargetDescriptor, value: 'Hi' },
+        {
+          name: 'type',
+          summary: '2',
+          target: { role: 'textbox', name: 'Write something…', standard: { role: null, name: '' } } as CodegenTargetDescriptor,
+          value: 'Hi',
+        },
+        { name: 'type', summary: '3', target: { role: 'textbox', standard: { role: null } } as CodegenTargetDescriptor, value: 'Hi' },
+        { name: 'tap', summary: '4', target: { role: 'button', name: 'Sign in', standard: { name: '\uf090 Sign in' } } as CodegenTargetDescriptor },
+        { name: 'tap', summary: '5', target: { role: 'link', name: 'Sign out', standard: { name: '\uf08b' } } as CodegenTargetDescriptor },
+      ]),
+    );
+    expect(code).toContain('await page.getByLabel("Editor", { exact: true }).fill("Hi");');
+    expect(code).toContain('await page.locator("[data-placeholder=\\"Write something…\\"]").fill("Hi");');
+    expect(code).toContain('await page.locator(":is([contenteditable=\\"\\"], [contenteditable=\\"true\\"], [contenteditable=\\"plaintext-only\\"])").fill("Hi");');
+    expect(code).toContain('await page.getByRole("button", { name: "\\uf090 Sign in", exact: true }).click();');
+    expect(code).toContain('await page.getByTitle("Sign out", { exact: true }).click();');
   });
 
   it("sets the engine's test id attribute when it is not Playwright's default", () => {

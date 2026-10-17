@@ -130,19 +130,19 @@ identical controls gets `.nth()`. The web engine's
 [`testIdAttribute`](/browser) is set with `selectors.setTestIdAttribute`.
 
 Locators follow the standard (W3C accessible names, as Playwright computes
-them), where e2e reads a few things its own way for the model:
+them). In a few places e2e reads a node its own way for the model; it records
+the standard's reading of those nodes beside what it shows the model, and the
+code is written from the standard's:
 
-- e2e names a `listitem`, `status`, or `alert` from what it contains, so the
-  model can read a row by what it says; by the standard only an author names
-  them. The recording notes when a name came from the content, and such a
-  node is found by the text it shows as the whole of its content
-  (`page.getByRole("listitem").filter({ hasText: /^\s*Buy\s*milk\s*$/u })`).
-  One an author named is found by that name.
-- An `iframe` is found by its `title` or `aria-label`.
-- Not covered: an editor's `contenteditable` host, which e2e reads as a
-  `textbox` and the standard gives no role, and a name with an icon-font
-  glyph, which e2e drops from the name and the standard keeps. Rewrite those
-  locators by hand.
+| e2e reads | The standard reads | Generated locator |
+| --- | --- | --- |
+| a `listitem`, `status`, or `alert` named from what it contains | no name, unless an author named it | `getByRole("listitem").filter({ hasText: /^\s*Buy\s*milk\s*$/u })`: the text it shows, as the whole of its content |
+| a name with its icon-font glyphs dropped (`Sign in`) | the name with the glyph (`\uf090 Sign in`) | `getByRole("button", { name: "\uf090 Sign in", exact: true })` |
+| a glyph-only control named by its `title` (`Sign out`) | the glyph alone | `getByTitle("Sign out", { exact: true })` |
+| an editor's `contenteditable` host as a `textbox` | no role | `getByLabel("Body", { exact: true })` by its label, else `locator('[data-placeholder="Write…"]')` by the placeholder e2e named it from, else the editing host |
+| an `iframe` | no role | `locator('iframe[title="…"], iframe[aria-label="…"]')` |
+
+An author's name always wins: a list row with an `aria-label` is found by it.
 
 The web engine's tests run every generated locator against the pages its
 own tree is checked on, and against every web-benchmark scenario, so a

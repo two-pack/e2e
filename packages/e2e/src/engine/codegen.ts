@@ -8,6 +8,7 @@
  */
 
 import type { RecordedAction, TraceTargetDescriptor } from '../cache/trace.ts';
+import type { StandardReading } from './contract.ts';
 
 /**
  * One grammar action an agent step committed, with the durable descriptor of
@@ -22,13 +23,14 @@ export type CodegenAction = RecordedAction;
  */
 export interface CodegenTargetDescriptor extends TraceTargetDescriptor {
   /**
-   * What the node shows, present only when its name is the one its content
-   * makes rather than one an author gave: a list row an engine names from its
-   * children's names (a button's label among them), where the page's own
-   * accessible name, by the standard, is none. Bounded and redacted like the
-   * other fields.
+   * What the node shows, present when the standard gives the node no name
+   * (`standard.name` is `''`) but the engine named it from its content: a
+   * list row named from its children's names (a button's label among them)
+   * is found by this text instead. Bounded and redacted like the other fields.
    */
   readonly shownText?: string;
+  /** How the platform's standard reads the node where the engine reports it its own way (`SemanticNode.standard`). */
+  readonly standard?: StandardReading;
 }
 
 /** What one `agent.act` step did, as recorded while it ran. */

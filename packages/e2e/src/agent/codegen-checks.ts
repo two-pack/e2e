@@ -22,7 +22,7 @@ import type { AgentObservation, RedactedNode } from './observation.ts';
 import { isRelocatableDescriptor, describePosition } from '../cache/relocate.ts';
 import type { TraceTargetDescriptor } from '../cache/trace.ts';
 import type { CodegenCheck, CodegenTargetDescriptor } from '../engine/codegen.ts';
-import { displayedTextOf, shownTextOf } from '../run/codegen.ts';
+import { codegenExtrasOf, displayedTextOf } from '../run/codegen.ts';
 import { collapseText } from '../internal/text.ts';
 import { CHECKS_SCHEMA, CHECKS_SCHEMA_NAME, MAX_CHECKS, validateChecksResponse, type ProposedCheck } from './protocol.ts';
 
@@ -234,8 +234,7 @@ function durableTarget(
     ...(position === undefined ? {} : { position }),
   };
   if (!isRelocatableDescriptor(descriptor)) return undefined;
-  const shownText = shownTextOf(node, redact);
-  return shownText === undefined ? descriptor : { ...descriptor, shownText };
+  return { ...descriptor, ...codegenExtrasOf(node, redact) };
 }
 
 /** The checks in order, each once. */

@@ -54,6 +54,8 @@ export interface RawNodeData {
   testId: string | null;
   /** The element's box in its document's viewport; null when it lays out no box (`display: none`). */
   rect: { x: number; y: number; width: number; height: number } | null;
+  /** How the standard reads the element where the tree reads it its own way (`SemanticNode.standard`); absent where they agree. */
+  standard?: { role?: string | null; name?: string };
 }
 
 /** One observed node plus its position in the flattened depth-first tree. */

@@ -22,17 +22,10 @@ const MAX_FIELD_CHARS = 300;
 
 /**
  * Nodes whose generated locator is known not to reach them, by page and
- * `role "name"`, each with its reason. A new miss fails; so does one listed
- * here that started to match.
+ * `role "name"`, each with its reason; none today. A new miss fails; so does
+ * one listed here that started to match.
  */
-const KNOWN_MISSES: Readonly<Record<string, string>> = {
-  'generated content | link "Sign out"':
-    'the browser names a glyph-only link by its glyph, so the title the tree shows is no accessible name to Playwright (expected.txt, crosscheck)',
-  'shadow and custom elements | textbox "Editor"':
-    "the tree reads an editor's contenteditable host as a textbox, which the standard gives no role, so getByRole finds nothing",
-  'generated content | button "Sign in"':
-    'the standard keeps an icon-font glyph in the name, which the tree drops, so the generated exact name does not match it',
-};
+const KNOWN_MISSES: Readonly<Record<string, string>> = {};
 
 let browser: Browser;
 let page: Page;
@@ -54,16 +47,9 @@ function field(value: string | undefined): string | undefined {
   return collapsed.length <= MAX_FIELD_CHARS ? collapsed : `${collapsed.slice(0, MAX_FIELD_CHARS - 1)}…`;
 }
 
-/** A node's name as its content makes it: its own text, then each child's name or content name, joined. */
-function contentNameOf(node: SemanticNode): string {
-  const parts = [node.text ?? '', ...(node.children ?? []).map((child) => field(child.name) ?? contentNameOf(child))];
-  return field(parts.join(' ')) ?? '';
-}
-
-/** What a node shows when its name came from its content, as `shownTextOf` in e2e records it beside the descriptor. */
+/** What a node shows when the standard gives it no name, as `shownTextOf` in e2e records it beside the descriptor. */
 function shownTextOf(node: SemanticNode): string | undefined {
-  const name = field(node.name);
-  if (name === undefined || contentNameOf(node) !== name) return undefined;
+  if (node.standard?.name !== '' || field(node.name) === undefined) return undefined;
   const parts: string[] = [];
   const collect = (current: SemanticNode): void => {
     if (current.text !== undefined && current.text.trim() !== '') parts.push(current.text);
@@ -88,6 +74,7 @@ function descriptorOf(node: SemanticNode): CodegenTargetDescriptor | undefined {
     ...(testId === undefined ? {} : { testId }),
     ...(placeholder === undefined ? {} : { placeholder }),
     ...(shownText === undefined ? {} : { shownText }),
+    ...(node.standard === undefined ? {} : { standard: node.standard }),
   };
 }
 

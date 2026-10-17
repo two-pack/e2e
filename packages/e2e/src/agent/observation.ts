@@ -210,6 +210,8 @@ const NODE_FIELDS: { readonly [Field in NodeField]-?: FieldRedaction<Field> } = 
   rect: keep,
   selector: (selector, _node, redaction) => redactText(selector, redaction),
   framePath: (framePath, _node, redaction) => framePath.map((selector) => redactText(selector, redaction)),
+  standard: (standard, _node, redaction) =>
+    standard.name === undefined ? standard : { ...standard, name: redactText(standard.name, redaction, OBSERVED_NAME_LIMIT) },
 };
 
 /**

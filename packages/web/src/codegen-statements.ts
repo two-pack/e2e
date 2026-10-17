@@ -195,11 +195,18 @@ export class StatementWriter {
     if (target.testId !== undefined) {
       if (this.testIdAttribute !== PLAYWRIGHT_TEST_ID_ATTRIBUTE) this.needs.testIdAttribute = true;
       base = `${scope}.getByTestId(${literal(target.testId)})`;
+    } else if (target.standard?.role === null) {
+      base = `${scope}.${this.roleless(target)}`;
     } else if (role !== undefined && CONTENT_NAMED_ROLES.has(role) && target.shownText !== undefined) {
       // e2e named it from its content; by the standard it has no name, so it is found by what it shows.
       base = `${scope}.getByRole(${literal(role)}).filter({ hasText: ${wholeTextPattern(target.shownText)} })`;
+    } else if (role !== undefined && target.name !== undefined && target.standard?.name !== undefined && isGlyphsOnly(target.standard.name)) {
+      // The standard names it by its icon glyph alone; e2e reads the title a person hovering it sees.
+      base = `${scope}.getByTitle(${literal(target.name)}, { exact: true })`;
     } else if (role !== undefined && target.name !== undefined) {
-      base = `${scope}.getByRole(${literal(role)}, { name: ${literal(target.name)}, exact: true })`;
+      // The standard's name where it differs from e2e's (icon glyphs kept), else e2e's own.
+      const name = target.standard?.name ?? target.name;
+      base = name === '' ? `${scope}.getByRole(${literal(role)})` : `${scope}.getByRole(${literal(role)}, { name: ${nameLiteral(name)}, exact: true })`;
     } else if (target.role === 'iframe' && target.name !== undefined) {
       // ARIA has no iframe role; a frame's name is its title, or a label an author gave it.
       const name = JSON.stringify(target.name);
@@ -216,6 +223,18 @@ export class StatementWriter {
       base = `${scope}.locator(":focus") /* TODO: the recording kept nothing to find this node by */`;
     }
     return target.position !== undefined && target.position.of > 1 ? `${base}.nth(${String(target.position.index)})` : base;
+  }
+
+  /**
+   * A node the standard gives no role, an editor's `contenteditable` host
+   * e2e reads as a textbox: by the label the standard names it with, else by
+   * the `data-placeholder` e2e named it from, else as the editing host.
+   */
+  private roleless(target: CodegenTargetDescriptor): string {
+    const standardName = target.standard?.name ?? target.name;
+    if (standardName !== undefined && standardName !== '') return `getByLabel(${nameLiteral(standardName)}, { exact: true })`;
+    if (target.name !== undefined) return `locator(${literal(`[data-placeholder=${JSON.stringify(target.name)}]`)})`;
+    return `locator(${literal(':is([contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"])')})`;
   }
 
   /** A location on the app's own origin as a path the `baseURL` resolves; any other location whole. */
@@ -248,6 +267,22 @@ export class StatementWriter {
       ...(this.needs.within ? ['import type { Locator, Page } from "@playwright/test";'] : []),
     ];
   }
+}
+
+/** Icon-font glyphs: private-use code points, which render as a picture and read as no word. */
+const ICON_GLYPHS = /\p{Co}/gu;
+
+/** Whether a name is icon glyphs and whitespace only. */
+function isGlyphsOnly(name: string): boolean {
+  return name.trim() !== '' && name.replaceAll(ICON_GLYPHS, '').trim() === '';
+}
+
+/** A name as a string literal, an icon glyph written as its escape so the code shows what it matches. */
+function nameLiteral(name: string): string {
+  return literal(name).replaceAll(ICON_GLYPHS, (glyph) => {
+    const code = glyph.codePointAt(0)!;
+    return code > 0xffff ? `\\u{${code.toString(16)}}` : `\\u${code.toString(16).padStart(4, '0')}`;
+  });
 }
 
 /** The role `getByRole` takes for an e2e role, or undefined when ARIA has none (`box`, `iframe`). */

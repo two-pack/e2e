@@ -15,5 +15,7 @@ the recorded clicks and fills, judgments as `expect` calls (`waitFor`'s with
 its timeout), `extract` as the value it returned, and the rest of the e2e API
 in its Playwright spelling, control flow kept. Secret fills read their
 `E2E_USER_*`/`E2E_SECRET_*` variable. Locators follow the standard accessible
-names: a list row, status, or alert e2e named from its content is found by
-the text it shows.
+names: the web engine's nodes now carry `standard`, the standard's reading
+where e2e reads a node its own way for the model, and the code is written from
+it (a list row e2e named from its content by the text it shows, a name with
+its icon glyph, an editor's host by its label).

@@ -402,6 +402,7 @@ export function toSemanticNode(
     ...(raw.level !== null ? { level: raw.level } : {}),
     attributes: raw.attributes,
     ...(raw.rect !== null ? { rect: raw.rect } : {}),
+    ...(raw.standard === undefined ? {} : { standard: raw.standard }),
     ...(framePath.length > 0 ? { framePath } : {}),
     ...(children.length > 0 ? { children } : {}),
   };
