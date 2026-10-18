@@ -379,6 +379,24 @@ describe('--codegen on the in-process transport', () => {
     expect(readFileSync(path.join(project.dir, SPEC), 'utf8')).toContain(`await expect(${COUNTER}).toContainText("1");`);
   });
 
+  it("asks the judge again when a judgment's last checks proved it only in part, even though they still hold", async () => {
+    // The checks are the ones the judge gave and still hold; only the gap the record now carries keeps them from being reused.
+    const recordFile = path.join(project.dir, '.e2e', 'codegen', 'web', 'tests', 'counter.e2e.ts.json');
+    const record = JSON.parse(readFileSync(recordFile, 'utf8')) as {
+      tests: { test: { title: string; steps: { judgment?: { gap?: unknown } }[] } }[];
+    };
+    const judgment = record.tests.find((stored) => stored.test.title === 'increments through the agent')!.test.steps.find((step) => step.judgment !== undefined)!.judgment!;
+    judgment.gap = { uncovered: ['shows 1'], dropped: [] };
+    writeFileSync(recordFile, JSON.stringify(record), 'utf8');
+    const counted = globalThis as { codegenChecksAsked?: string[] };
+    counted.codegenChecksAsked = [];
+    const rerunOutcome = await rerun(/increments through the agent/);
+    expect(counted.codegenChecksAsked).toEqual(['the counter shows 1']);
+    // The new answer proves the whole judgment, so it replaces the old one and the code says nothing is left unchecked.
+    expect(rerunOutcome.report.run.codegen?.gaps.filter((gap) => gap.carried !== true) ?? []).toEqual([]);
+    expect(readFileSync(path.join(project.dir, SPEC), 'utf8')).not.toContain('Not checked: shows 1');
+  });
+
   it("writes a test's code again up to a failure that implicates the app, and keeps it when only the model did not answer", async () => {
     const before = readFileSync(path.join(project.dir, OTHER), 'utf8');
     expect(before).toContain("test('breaks on demand', async ({ page }) => {\n  await page.goto(\"/\");\n  // agent.act: increment the counter once\n  await page.getByRole");

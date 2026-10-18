@@ -65,11 +65,12 @@ is not written at all. Any other is written again whole, from the e2e file as
 it is now and what its tests last recorded. An agent call whose instruction
 changed since its test last passed throws until the test passes again.
 
-A judgment reuses the checks its test's last recorded run made, when every one
-of them still holds on the screen it passed on, and the judge is not asked
-again; the parts left unchecked and the judge's explanation come with them
-from that run. The code then stays the same while the page does. A check that
-no longer holds sends the judgment back to the judge.
+A judgment reuses the checks its test's last recorded run made, when they
+proved the whole judgment there and every one of them still holds on the
+screen it passed on, and the judge is not asked again. The code then stays
+the same while the page does. A check that no longer holds, or checks that
+proved only part of the judgment, send it back to the judge, and its new
+answer replaces the old one.
 
 A generated file edited by hand since the run last wrote it is written over,
 and the run says so in a warning, as it does for a file at that path it has

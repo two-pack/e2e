@@ -145,16 +145,18 @@ export async function recordCodegenJudgment(runtime: AgentContext, request: Code
   const serialized = request.value === undefined ? undefined : JSON.stringify(request.value);
   const keepValue = serialized !== undefined && runtime.redact(serialized) === serialized;
   // The checks the test's last recorded run made for this judgment, reused
-  // when every one still holds: the code then stays the same while the page
-  // does, and the judge is not asked again.
+  // when they proved it whole and every one still holds: the code then stays
+  // the same while the page does, and the judge is not asked again. A
+  // judgment they proved only in part is asked again, so its gap can close.
   const label = runtime.steps.all().find((step) => step.id === stepId)?.label;
   const occurrence = runtime.steps.all().filter((step) => step.id !== stepId && step.api === request.api && step.label === label).length;
   const previous = label === undefined ? undefined : codegen.previousJudgment(request.api, label, occurrence);
-  const reused = previous !== undefined && JSON.stringify(previous.value) === serialized ? await reusable(runtime, codegen, request, previous) : undefined;
+  const reused =
+    previous !== undefined && previous.gap === undefined && JSON.stringify(previous.value) === serialized
+      ? await reusable(runtime, codegen, request, previous)
+      : undefined;
   if (reused !== undefined) {
-    const { screenshot: _shot, screenshotWithheld: _withheld, ...gap } = reused.gap ?? { uncovered: [], dropped: [] };
-    const screenshot = reused.gap === undefined ? undefined : (request.screenshot ?? (await screenshotForGap(runtime)));
-    codegen.judged(stepId, { checks: reused.checks, ...(keepValue ? { value: request.value } : {}), ...(reused.gap === undefined ? {} : { gap }) }, screenshot);
+    codegen.judged(stepId, { checks: reused.checks, ...(keepValue ? { value: request.value } : {}) }, undefined);
     return;
   }
   const derived = await deriveCodegenChecks(runtime, codegen, request);

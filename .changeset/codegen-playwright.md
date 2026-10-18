@@ -49,4 +49,5 @@ codegen clear` deletes the generated files and their records.
 
 A judgment reuses the checks its test's last recorded run made while every
 one still holds on the screen, so the code stays the same while the page does
-and the judge is not asked again.
+and the judge is not asked again. Checks that proved the judgment only in
+part are never reused: the judge is asked again, so the gap can close.
