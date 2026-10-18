@@ -779,7 +779,7 @@
       }
     },
     "codegen": {
-      "description": "What e2e run --codegen wrote: the directory and files, project-root relative, and every judgment the written code does not prove whole. Present only on a run that asked for code and reached its tests.",
+      "description": "What e2e run --codegen keeps in step: the directory the generated code goes to (codegen.outDir) and the files written in this run, project-root relative, and every judgment the generated code does not prove whole, written in this run or kept from an earlier one (carried). Present only on a run that asked for code and reached its tests.",
       "type": "object",
       "additionalProperties": false,
       "required": ["dir", "files", "gaps"],
@@ -790,7 +790,7 @@
       }
     },
     "codegenGap": {
-      "description": "One judgment the generated code does not prove whole: partial when its checks prove only some of the instruction, unconverted when no check could be kept and the code throws in its place. uncovered holds the parts of the instruction the code does not check, as the judge named them; screenshot is the screen the judgment passed on, put beside the file, project-root relative, and screenshotWithheld why there is none.",
+      "description": "One judgment the generated code does not prove whole: partial when its checks prove only some of the instruction, unconverted when no check could be kept and the code throws in its place. uncovered holds the parts of the instruction the code does not check, as the judge named them; screenshot is the screen the judgment passed on, in the run's artifacts, project-root relative, and screenshotWithheld why there is none; carried marks a gap an earlier run recorded for a test this run did not refresh.",
       "type": "object",
       "additionalProperties": false,
       "required": ["file", "line", "kind", "source", "test", "api", "instruction", "uncovered"],
@@ -804,7 +804,8 @@
         "instruction": { "type": "string" },
         "uncovered": { "type": "array", "items": { "type": "string" } },
         "screenshot": { "type": "string", "minLength": 1 },
-        "screenshotWithheld": { "type": "string", "minLength": 1 }
+        "screenshotWithheld": { "type": "string", "minLength": 1 },
+        "carried": { "const": true }
       }
     },
     "explore": {

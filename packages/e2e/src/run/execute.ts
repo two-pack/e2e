@@ -973,7 +973,7 @@ export class TargetExecutor implements SerialHost {
     // A serial member's steps live on its group, which `--codegen` leaves out,
     // and a test registered in memory has no file to write code beside.
     const codegen =
-      this.config.codegen === true && inMemory === undefined && shared === undefined ? new CodegenLog(attemptId, this.target.engine?.codegen) : undefined;
+      this.config.codegen.enabled && inMemory === undefined && shared === undefined ? new CodegenLog(attemptId, this.target.engine?.codegen) : undefined;
     if (codegen !== undefined) this.codegenLogs.set(attemptId, codegen);
 
     // A rejection nobody caught, handed in by the process while this attempt
@@ -1292,6 +1292,9 @@ export class TargetExecutor implements SerialHost {
         if (step.cache !== undefined && write !== undefined) step.cache.write = write;
       }
     }
+    // `--codegen` keeps a test's last code on the same terms the cache keeps
+    // its entries: only a failure that says something about the app drops it.
+    codegen?.settle(record.status !== 'interrupted' && failure !== undefined && implicatesUnconfirmed);
     return record;
   }
 }

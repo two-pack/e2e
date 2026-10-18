@@ -4,7 +4,7 @@
 ---
 
 Add `e2e run --codegen`. It writes each test file as the target engine's own
-test code under `<output>/codegen/<target>/` (`<file>.gen.spec.ts` on the web engine), runnable with no model. The
+test code under `codegen.outDir` (`e2e-gen/` by default; `<file>.gen.spec.ts` on the web engine), runnable with no model. The
 runner records every action an `agent.act` step commits, whether the model or
 the replay cache chose it, and for each passing `agent.assert`,
 `agent.waitFor`, and `agent.extract` asks the judge once more for the
@@ -35,6 +35,13 @@ the engine's new optional `codegen.locate` says which nodes of a screen a
 locator finds, so a title reading "Login" beside a button reading the same
 is dropped, not written as a `getByText` that matches both.
 
-A judgment with a gap also gets a screenshot of the screen it passed on,
-beside the file in `<file>.gaps/`, named in its comment, the warning, and the
-report; none once a secret was filled, and the comment says why.
+A judgment with a gap also names a screenshot of the screen it passed on, in
+the run's artifacts, in its comment, the warning, and the report; none once a
+secret was filled, and the comment says why.
+
+The code is kept in step across runs, one file per e2e file: each test's last
+passing recordings are kept under `<output>/codegen/`, a test the run did not
+refresh (or that failed only because no model answered) keeps its code, one
+that failed otherwise drops it, a test or e2e file the project no longer has
+loses its code, and a file none of whose tests ran is not written. `e2e
+codegen clear` deletes the generated files and their records.

@@ -257,7 +257,7 @@ describe('playwright codegen statements', () => {
       explanation: 'The login form shows and no list is on screen.\nNo task is listed.',
       uncovered: ['タスクの一覧は表示されていない'],
       dropped: [{ check: 'absent "Logout"', reason: 'the instruction does not say this text is missing' }, { reason: 'its text carries a secret' }],
-      screenshot: 'checkout.gen.spec.ts.gaps/1-1.png',
+      screenshot: '.e2e/artifacts/web/tests_checkout.e2e.ts___buys_a_hat/default/attempt-0/screenshots/001-assert.png',
     };
     const file: CodegenFile = {
       ...judgedFile('agent.assert', [{ kind: 'visible', target: { role: 'button', name: 'Login' } }]),
@@ -272,7 +272,7 @@ describe('playwright codegen statements', () => {
         '  //   Not checked: タスクの一覧は表示されていない',
         '  //   Dropped absent "Logout": the instruction does not say this text is missing',
         '  //   Dropped a check whose content is withheld: its text carries a secret',
-        '  //   Screenshot of the screen it passed on: ./checkout.gen.spec.ts.gaps/1-1.png',
+        '  //   Screenshot of the screen it passed on: .e2e/artifacts/web/tests_checkout.e2e.ts___buys_a_hat/default/attempt-0/screenshots/001-assert.png',
         '  await expect(page.getByRole("button", { name: "Login", exact: true })).toBeVisible();',
       ].join('\n'),
     );

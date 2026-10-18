@@ -6,7 +6,7 @@
  * model drove.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -22,6 +22,8 @@ import {
 import type { StepExecutor } from '../../src/agent/executor.ts';
 import type { ModelInstance } from '../../src/types.ts';
 import { installFakeModel, type FakeCall } from '../helpers/fake-model.ts';
+import { createScriptedInstance } from '../helpers/scripted-model.ts';
+import { codegen as codegenCommand } from '../../src/cli/codegen.ts';
 
 const SUITE = `import { test, expect } from 'e2e';
 
@@ -58,6 +60,33 @@ test('fails after the agent acted', async ({ app, agent, screen }) => {
   await expect(screen.getByRole('status')).toHaveText('2', { timeout: 200 });
 });
 `;
+
+/**
+ * A second e2e file, whose tests a later run breaks, takes the model from, or
+ * removes, to see the code follow: a failure that implicates the app drops a
+ * test's code, one where no model answered keeps it.
+ */
+const OTHER_SUITE = `import { test, expect } from 'e2e';
+
+test('breaks on demand', async ({ app, agent, screen }) => {
+  await app.open();
+  await agent.act('increment the counter once');
+  await agent.assert('the counter shows 1');
+  if (process.env.CODEGEN_BREAK === '1') await expect(screen.getByRole('status')).toHaveText('9', { timeout: 200 });
+});
+
+test('waits on demand', async ({ app, agent }) => {
+  await app.open();
+  await agent.act('increment the counter once');
+  await agent.assert('the counter shows 1');
+  if (process.env.CODEGEN_PROVIDER_DOWN === '1') await agent.waitFor('the counter shows 1', { agent: 'judge', timeout: 2_000 });
+});
+`;
+
+/** A judge that never answers: what a missing key or an outage looks like to a run. */
+const unreachableModel = createScriptedInstance('fake', 'unreachable', async () => {
+  throw new Error('401 Unauthorized: no API key was provided');
+});
 
 /**
  * Taps Increment once per act and passes every judgment, with no model: the
@@ -140,7 +169,14 @@ const COUNTER = 'page.getByRole("status", { name: "Counter", exact: true })';
 
 const HELPER = fileURLToPath(new URL('../helpers/fake-model.ts', import.meta.url));
 
-const SPEC = path.join('.e2e', 'codegen', 'web', 'tests', 'counter.gen.spec.ts');
+const SPEC = path.join('e2e-gen', 'tests', 'counter.gen.spec.ts');
+const OTHER = path.join('e2e-gen', 'tests', 'other.gen.spec.ts');
+
+/** A path as the report spells it. */
+const posix = (file: string): string => file.split(path.sep).join('/');
+
+/** The screenshot line of a judgment's note, naming a file in the run's artifacts. */
+const SCREENSHOT_LINE = /^\/\/ {3}Screenshot of the screen it passed on: (\.e2e\/artifacts\/\S+\.png)$/u;
 
 describe('--codegen on the in-process transport', () => {
   let app: FixtureApp;
@@ -152,12 +188,12 @@ describe('--codegen on the in-process transport', () => {
 
   beforeAll(async () => {
     app = await startFixtureApp();
-    project = createProject({ 'tests/counter.e2e.ts': SUITE, 'tapper.ts': EXECUTOR_MODULE });
+    project = createProject({ 'tests/counter.e2e.ts': SUITE, 'tests/other.e2e.ts': OTHER_SUITE, 'tapper.ts': EXECUTOR_MODULE });
     executor = ((await import(path.join(project.dir, 'tapper.ts'))) as { tapper: StepExecutor }).tapper;
     model = installFakeModel(judge);
     outcome = await runExisting(project, {
       appUrl: app.url,
-      config: { tests: 'tests/**/*.e2e.ts', agents: { default: { executor, model } } },
+      config: config(),
       runOptions: {
         codegen: true,
         onEvent: (event) => {
@@ -172,10 +208,16 @@ describe('--codegen on the in-process transport', () => {
     await app?.close();
   });
 
-  it('writes one Playwright file per test file and reports it', () => {
+  /** The run's config: the tapping executor, the judge the checks question goes to, and an agent whose judge never answers. */
+  const config = () => ({ tests: 'tests/**/*.e2e.ts', agents: { default: { executor, model }, judge: { model: unreachableModel } } });
+
+  /** One more `--codegen` run of the tests the pattern selects. */
+  const rerun = (grep: RegExp) => runExisting(project, { appUrl: app.url, config: config(), runOptions: { codegen: true, grep: [grep] } });
+
+  it('writes one Playwright file per e2e file under codegen.outDir and reports it', () => {
     expect(resultByTitle(outcome, 'increments through the agent').status).toBe('passed');
     expect(resultByTitle(outcome, 'fails after the agent acted').status).toBe('failed');
-    expect(outcome.codegenFiles).toEqual([path.join(project.dir, SPEC)]);
+    expect(outcome.codegenFiles?.toSorted()).toEqual([path.join(project.dir, OTHER), path.join(project.dir, SPEC)].toSorted());
   });
 
   it('converts the test source: the act becomes its actions, the assert the check the screen bore out', () => {
@@ -207,17 +249,18 @@ describe('--codegen on the in-process transport', () => {
     const code = readFileSync(path.join(project.dir, SPEC), 'utf8');
     const lines = code.split('\n');
     const header = lines.findIndex((line) => line.trim() === '// agent.assert: the Increment button is gone and nothing is broken');
-    expect(lines.slice(header, header + 7).map((line) => line.trim())).toEqual([
+    expect(lines.slice(header, header + 5).map((line) => line.trim())).toEqual([
       '// agent.assert: the Increment button is gone and nothing is broken',
       '// NOTE: the checks below prove only part of this judgment.',
       "//   The judge's explanation of its verdict (its reasoning, not a checked fact): judged",
       '//   Not checked: nothing is broken',
       '//   Dropped absent "Error": the instruction does not say this text is missing',
-      // The custom executor took no screenshot of its own; the gap took one of the screen it passed on.
-      '//   Screenshot of the screen it passed on: ./counter.gen.spec.ts.gaps/2-4.png',
-      'await expect(page.getByRole("button", { name: "Increment", exact: true })).toHaveCount(0);',
     ]);
-    expect(existsSync(path.join(project.dir, path.dirname(SPEC), 'counter.gen.spec.ts.gaps', '2-4.png'))).toBe(true);
+    // The custom executor took no screenshot of its own; the gap took one of the screen it passed on, kept in the artifacts.
+    const shot = SCREENSHOT_LINE.exec(lines[header + 5]!.trim())?.[1];
+    expect(shot).toBeDefined();
+    expect(existsSync(path.join(project.dir, shot!))).toBe(true);
+    expect(lines[header + 6]?.trim()).toBe('await expect(page.getByRole("button", { name: "Increment", exact: true })).toHaveCount(0);');
     // A field is an element too, found by its label whatever was typed into it.
     expect(lines[header + 7]?.trim()).toBe('await expect(page.getByRole("textbox", { name: "Email", exact: true })).toHaveCount(0);');
     expect(lines[header + 8]?.trim()).toBe('await expect(page.getByText("Increment")).toHaveCount(0);');
@@ -225,7 +268,7 @@ describe('--codegen on the in-process transport', () => {
     // The first judgment's checks prove all of it: no note.
     expect(code).toContain('  // agent.assert: the counter is on screen\n  await expect');
     const gap = {
-      file: SPEC.split(path.sep).join('/'),
+      file: posix(SPEC),
       line: header + 1,
       kind: 'partial',
       source: 'tests/counter.e2e.ts',
@@ -233,7 +276,7 @@ describe('--codegen on the in-process transport', () => {
       api: 'agent.assert',
       instruction: 'the Increment button is gone and nothing is broken',
       uncovered: ['nothing is broken'],
-      screenshot: `${SPEC.split(path.sep).join('/')}.gaps/2-4.png`,
+      screenshot: shot,
     };
     const replacedHeader = lines.findIndex((line) => line.trim() === '// agent.assert: the Increment button was replaced, and nothing is broken');
     const replaced = {
@@ -241,11 +284,14 @@ describe('--codegen on the in-process transport', () => {
       line: replacedHeader + 1,
       test: 'remembers what a screen step went through',
       instruction: 'the Increment button was replaced, and nothing is broken',
-      screenshot: `${SPEC.split(path.sep).join('/')}.gaps/3-3.png`,
+      screenshot: SCREENSHOT_LINE.exec(lines[replacedHeader + 4]!.trim())?.[1],
     };
-    expect(outcome.report.run.codegen).toEqual({ dir: '.e2e/codegen', files: [SPEC.split(path.sep).join('/')], gaps: [gap, replaced] });
+    const report = outcome.report.run.codegen!;
+    expect(report.dir).toBe('e2e-gen');
+    expect([...report.files].toSorted()).toEqual([posix(OTHER), posix(SPEC)].toSorted());
+    expect(report.gaps).toEqual([gap, replaced]);
     expect(warnings).toEqual([
-      `--codegen: 2 judgments were only partly converted (${gap.file}:${String(gap.line)}, ${replaced.file}:${String(replaced.line)}); screenshots in ${gap.file}.gaps`,
+      `--codegen: 2 judgments were only partly converted: ${gap.file}:${String(gap.line)} (screenshot ${gap.screenshot!}), ${replaced.file}:${String(replaced.line)} (screenshot ${replaced.screenshot!})`,
     ]);
   });
 
@@ -258,10 +304,9 @@ describe('--codegen on the in-process transport', () => {
         '  // NOTE: the checks below prove only part of this judgment.',
         "  //   The judge's explanation of its verdict (its reasoning, not a checked fact): judged",
         '  //   Not checked: nothing is broken',
-        '  //   Screenshot of the screen it passed on: ./counter.gen.spec.ts.gaps/3-3.png',
-        '  await expect(page.getByRole("button", { name: "Increment", exact: true })).toHaveCount(0);',
       ].join('\n'),
     );
+    expect(code).toMatch(/ {2}\/\/ {3}Screenshot of the screen it passed on: \.e2e\/artifacts\/\S+\.png\n {2}await expect\(page\.getByRole\("button", \{ name: "Increment", exact: true \}\)\)\.toHaveCount\(0\);/u);
   });
 
   it('keeps a check only on a node the code finds alone, saying why it dropped the other', () => {
@@ -289,26 +334,90 @@ describe('--codegen on the in-process transport', () => {
     );
   });
 
-  it('writes the same code when the cache replays the step, and replaces the previous files', async () => {
+  it('writes the same code when the cache replays the step, and leaves a file none of whose tests ran as it was', async () => {
     const before = readFileSync(path.join(project.dir, SPEC), 'utf8');
-    const replayed = await runExisting(project, {
-      appUrl: app.url,
-      config: { tests: 'tests/**/*.e2e.ts', agents: { default: { executor, model } } },
-      runOptions: { codegen: true, grep: [/increments through the agent|leaves the counter behind|remembers what a screen step|shows the sign-in card/] },
-    });
+    const other = statSync(path.join(project.dir, OTHER));
+    const replayed = await rerun(/increments through the agent/);
     expect(resultByTitle(replayed, 'increments through the agent').status).toBe('passed');
     const step = resultByTitle(replayed, 'increments through the agent').attempts[0]!.steps.find((candidate) => candidate.api === 'agent.act');
     expect(step?.cache?.mode).toBe('self-finalized');
+    // The tests the run did not select keep their code, and the gaps they had are reported as an earlier run's.
     expect(readFileSync(path.join(project.dir, SPEC), 'utf8')).toBe(before);
+    expect(statSync(path.join(project.dir, OTHER)).mtimeMs).toBe(other.mtimeMs);
+    expect(replayed.report.run.codegen?.gaps.map((gap) => gap.carried)).toEqual([true, true]);
+  });
+
+  it("drops a test's code when it fails in a way that implicates the app, and keeps it when only the model did not answer", async () => {
+    const before = readFileSync(path.join(project.dir, OTHER), 'utf8');
+    expect(before).toContain("test('breaks on demand', async ({ page }) => {\n  await page.goto(\"/\");\n  // agent.act: increment the counter once\n  await page.getByRole");
+    process.env['CODEGEN_BREAK'] = '1';
+    process.env['CODEGEN_PROVIDER_DOWN'] = '1';
+    let broken: RunOutcome;
+    try {
+      broken = await rerun(/on demand/);
+    } finally {
+      delete process.env['CODEGEN_BREAK'];
+      delete process.env['CODEGEN_PROVIDER_DOWN'];
+    }
+    expect(resultByTitle(broken, 'breaks on demand').status).toBe('failed');
+    expect(resultByTitle(broken, 'waits on demand').attempts.at(-1)!.steps.find((step) => step.api === 'agent.waitFor')?.error?.code).toBe(
+      'MODEL_PROVIDER_FAILED',
+    );
+    const code = readFileSync(path.join(project.dir, OTHER), 'utf8');
+    const breaks = code.slice(code.indexOf("test('breaks on demand'"), code.indexOf("test('waits on demand'"));
+    const waits = code.slice(code.indexOf("test('waits on demand'"));
+    expect(breaks).toContain('throw new Error("agent.act(\\"increment the counter once\\") was not recorded by e2e run --codegen");');
+    expect(waits).toBe(before.slice(before.indexOf("test('waits on demand'")));
+  });
+
+  it('drops the code of a test the e2e file no longer declares, and the file of an e2e file that is gone', async () => {
+    writeFileSync(path.join(project.dir, 'tests', 'other.e2e.ts'), OTHER_SUITE.slice(0, OTHER_SUITE.indexOf("test('waits on demand'")), 'utf8');
+    await rerun(/increments through the agent/);
+    const code = readFileSync(path.join(project.dir, OTHER), 'utf8');
+    expect(code).toContain("test('breaks on demand'");
+    expect(code).not.toContain('waits on demand');
+
+    rmSync(path.join(project.dir, 'tests', 'other.e2e.ts'));
+    const gone = await rerun(/increments through the agent/);
+    expect(existsSync(path.join(project.dir, OTHER))).toBe(false);
+    expect(gone.report.run.codegen?.gaps.every((gap) => gap.file === posix(SPEC))).toBe(true);
+    const records = readdirSync(path.join(project.dir, '.e2e', 'codegen'), { recursive: true }).map(String);
+    expect(records.filter((file) => file.endsWith('.json')).map(posix)).toEqual(['web/tests/counter.e2e.ts.json']);
   });
 
   it('writes nothing without the flag', async () => {
-    const plain = await runExisting(project, {
-      appUrl: app.url,
-      config: { tests: 'tests/**/*.e2e.ts', agents: { default: { executor, model } } },
-      runOptions: { grep: [/increments through the agent/] },
-    });
+    const before = readFileSync(path.join(project.dir, SPEC), 'utf8');
+    const plain = await runExisting(project, { appUrl: app.url, config: config(), runOptions: { grep: [/increments through the agent/] } });
     expect(plain.codegenFiles).toBeUndefined();
+    expect(readFileSync(path.join(project.dir, SPEC), 'utf8')).toBe(before);
+  });
+
+  it('clears the generated code and its records, leaving a file no record names', async () => {
+    // The command reads the project's config file, as a run from the command line does.
+    writeFileSync(
+      path.join(project.dir, 'e2e.config.ts'),
+      "import { web } from '@e2e-dev/web';\n\nexport default { targets: [{ name: 'web', platform: 'web', engine: web(), app: { url: 'http://127.0.0.1:1' } }] };\n",
+      'utf8',
+    );
+    const mine = path.join(project.dir, 'e2e-gen', 'tests', 'mine.spec.ts');
+    writeFileSync(mine, '// written by hand\n', 'utf8');
+    const write = process.stdout.write.bind(process.stdout);
+    let printed = '';
+    process.stdout.write = ((chunk: string) => {
+      printed += chunk;
+      return true;
+    }) as typeof process.stdout.write;
+    let code: number;
+    try {
+      code = await codegenCommand('clear', { cwd: project.dir });
+    } finally {
+      process.stdout.write = write;
+    }
+    expect(code).toBe(0);
+    expect(printed).toBe('cleared 1 generated file(s) from e2e-gen and 1 record(s)\n');
+    expect(existsSync(path.join(project.dir, SPEC))).toBe(false);
+    expect(existsSync(mine)).toBe(true);
+    expect(readdirSync(path.join(project.dir, '.e2e', 'codegen'), { recursive: true }).map(String).filter((file) => file.endsWith('.json'))).toEqual([]);
   });
 });
 
@@ -350,7 +459,7 @@ export default {
 
   it('collects every worker’s recordings and writes each file under its own path', () => {
     expect(outcome.exitCode).toBe(1);
-    const nested = path.join(project.dir, '.e2e', 'codegen', 'web', 'tests', 'nested', 'again.gen.spec.ts');
+    const nested = path.join(project.dir, 'e2e-gen', 'tests', 'nested', 'again.gen.spec.ts');
     expect(outcome.codegenFiles?.toSorted()).toEqual([path.join(project.dir, SPEC), nested].toSorted());
     expect(existsSync(nested)).toBe(true);
     const code = readFileSync(nested, 'utf8');

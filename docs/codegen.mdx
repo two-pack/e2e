@@ -23,19 +23,49 @@ bunx e2e run --codegen tests/checkout.e2e.ts
 ```
 </CodeGroup>
 
-The run writes one file per test file and target under
-`.e2e/codegen/<target>/`, at the test file's own path with `.gen.spec.ts` in place
-of `.e2e.ts`, and prints where. `.gen` marks the file as one e2e wrote, so it
-stays told apart from hand-written specs once copied among them; `.spec` is
-what Playwright Test picks up with its default `testMatch`.
+The run keeps one generated file per e2e file under `e2e-gen/`, at the e2e
+file's own path with `.gen.spec.ts` in place of `.e2e.ts`, and prints where.
+`.gen` marks the file as one e2e wrote, so it stays told apart from
+hand-written specs; `.spec` is what Playwright Test picks up with its default
+`testMatch`. When more than one target writes code, the target's name comes
+before the suffix (`checkout.web.gen.spec.ts`). Set
+[`codegen.outDir`](/reference/config#codegen) to put the files elsewhere.
 
 ```text
      Report  .e2e/report.json
-       Code  .e2e/codegen (1 file)
+       Code  e2e-gen (1 file)
 ```
 
-A run with `--codegen` replaces the whole directory. It follows `--output`
-like the report does.
+The generated files are meant to be committed: a run writes no run id or time
+into them, so the diff after a run shows what changed in the flow and nothing
+else.
+
+## Each run keeps the code in step
+
+`--codegen` keeps the code in step with the tests the way the
+[replay cache](/cache) keeps its entries, but with exactly one generated file
+per e2e file. What each test last recorded when it passed is kept in
+`.e2e/codegen/` (it follows `--output`), with the run that recorded it, and a
+run updates it as follows:
+
+| In this run | The test's code |
+| --- | --- |
+| The test passed | Written again from what this run recorded. |
+| The test was not run (`--grep`, a file named on the command line, `--last-failed`, an interrupt) | Left as it was. |
+| The test failed only because no model answered (`MODEL_UNAVAILABLE`, `MODEL_PROVIDER_FAILED`) | Left as it was. |
+| The test failed otherwise | Dropped: each agent call of it throws until the test passes again. |
+| The e2e file no longer declares the test | Dropped from the file. |
+| The e2e file is gone | The generated file is deleted. |
+
+A generated file none of whose tests ran, and whose e2e file did not change,
+is not written at all. Any other is written again whole, from the e2e file as
+it is now and what its tests last recorded. An agent call whose instruction
+changed since its test last passed throws until the test passes again.
+
+A generated file edited by hand since the run last wrote it is written over,
+and the run says so in a warning; keep your changes in a file of your own
+beside it. `e2e codegen clear` deletes every generated file and the records
+behind them, and leaves files no record names alone.
 
 ## What you get
 
@@ -61,7 +91,7 @@ test('signs in and buys a hat', async ({ app, agent, screen }) => {
 
 the web engine writes:
 
-```ts title=".e2e/codegen/web/tests/checkout.gen.spec.ts"
+```ts title="e2e-gen/tests/checkout.gen.spec.ts"
 import { expect, test } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 import { z } from 'zod';
@@ -174,7 +204,7 @@ code then says so above the checks:
 //   The judge's explanation of its verdict (its reasoning, not a checked fact): The Login button is shown and no list is on screen.
 //   Not checked: the task list is not
 //   Dropped absent "Logout": the instruction does not say this text is missing
-//   Screenshot of the screen it passed on: ./first.gen.spec.ts.gaps/1-5.png
+//   Screenshot of the screen it passed on: .e2e/artifacts/web/tests_first.e2e.ts___signs_out/default/attempt-0/assert-5.png
 await expect(page.getByRole("button", { name: "Login", exact: true })).toBeVisible();
 ```
 
@@ -185,23 +215,26 @@ rest of the file; a dropped check whose text would carry a secret is listed
 without its content. A judgment no check could be kept for throws in place of
 the call, with the same comments above the `throw`.
 
-The screenshot is of the screen the judgment passed on, put beside the file in
-`<file>.gaps/`, named by the test's and the step's place in the file. An
-`agent.assert` reuses the screenshot it keeps as evidence; an `agent.waitFor`,
-an `agent.extract`, and a custom executor's assertion take one only when their
-checks leave a gap. It is masked like every screenshot the run keeps, and none
-is taken once a secret was filled in the attempt, nor for an `agent.assert`
-called with `screenshot: false`; the comment then says why.
+The screenshot is of the screen the judgment passed on, in the run's
+artifacts: the note is meant to be acted on after the run that wrote it, and
+a later run clears the artifacts. An `agent.assert` reuses the screenshot it
+keeps as evidence; an `agent.waitFor`, an `agent.extract`, and a custom
+executor's assertion take one only when their checks leave a gap. It is
+masked like every screenshot the run keeps, and none is taken once a secret
+was filled in the attempt, nor for an `agent.assert` called with
+`screenshot: false`; the comment then says why.
 
 The run ends with a warning that points at each such judgment:
 
 ```text
-⚠ --codegen: 1 judgment was only partly converted (.e2e/codegen/web/tests/first.gen.spec.ts:27); screenshots in .e2e/codegen/web/tests/first.gen.spec.ts.gaps
+⚠ --codegen: 1 judgment was only partly converted: e2e-gen/tests/first.gen.spec.ts:27 (screenshot .e2e/artifacts/web/tests_first.e2e.ts___signs_out/default/attempt-0/assert-5.png)
 ```
 
 and `report.json` lists them under `run.codegen.gaps`, each with the file and
 line, `partial` or `unconverted`, the test, the instruction, the parts left
 unchecked, and the screenshot or why there is none, so CI can fail on them.
+A judgment of a test this run did not refresh is listed too, marked
+`carried`, and the warning counts it as one from an earlier run.
 
 ### How a node is found
 
@@ -254,10 +287,10 @@ that overrides the secret in the e2e config, the same one the helpers read.
 
 ## What a run cannot record
 
-- A test that did not pass is still converted, but each of its agent calls
-  is a `throw`: there is no recording to write from it. The same goes for a
-  call no passing test reached, such as one inside an `if` the run never
-  entered.
+- A test that never passed, or whose last failure dropped its code, is still
+  converted, but each of its agent calls is a `throw`: there is no recording
+  to write from it. The same goes for a call no passing run reached, such as
+  one inside an `if` the run never entered.
 - A project tool the agent called, or a value it typed that it read off the
   screen in that run, is a `TODO` comment inside the step.
 - A step whose recording could not be kept whole (a value that held a secret,
@@ -271,10 +304,10 @@ steps alone, one Playwright test per passing test.
 
 ## The code is a snapshot
 
-The agent adapts to the screen on every run; the file does not. It is what
-the agent did and checked once, in the run that wrote it, against the data
-that run saw. Read it before you commit it, and run `--codegen` again after
-the app changes. A step replayed from the [replay cache](/cache) writes the
+The agent adapts to the screen on every run; the file does not. Each test in
+it is what the agent did and checked in the run that last refreshed that
+test, against the data that run saw. Read the diff before you commit it, and
+run `--codegen` again after the app changes. A step replayed from the [replay cache](/cache) writes the
 same actions as the run that recorded it.
 
 Only the web engine writes code. Any other target gets a notice

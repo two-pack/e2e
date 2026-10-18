@@ -14,7 +14,6 @@ import { packageVersion } from '../internal/package-version.ts';
 import { projectRelativePath } from '../internal/source.ts';
 import type { VcsInfo } from '../internal/vcs.ts';
 import type { SkipInfo } from '../collect/select.ts';
-import type { CodegenGapRecord } from '../run/codegen.ts';
 import { someSkippedAfterFailure } from '../run/records.ts';
 import type {
   ArtifactRecord,
@@ -128,11 +127,38 @@ export interface ReportExploreStep {
   durationMs: number;
 }
 
-/** The `run.codegen` block: where `--codegen` wrote, project-root relative, and the judgments its code does not prove whole. */
+/** The `run.codegen` block: where `--codegen` writes, the files it wrote in this run, project-root relative, and every judgment the code does not prove whole. */
 export interface ReportCodegen {
   readonly dir: string;
   readonly files: readonly string[];
-  readonly gaps: readonly CodegenGapRecord[];
+  readonly gaps: readonly ReportCodegenGap[];
+}
+
+/**
+ * One judgment the generated code does not prove whole: `partial` when its
+ * checks prove only some of it, `unconverted` when no check could be kept and
+ * the code throws in its place.
+ */
+export interface ReportCodegenGap {
+  /** The generated file, project-root relative with `/` separators. */
+  readonly file: string;
+  /** The one-based line of the file the judgment starts at. */
+  readonly line: number;
+  readonly kind: 'partial' | 'unconverted';
+  /** The e2e test file the judgment ran in, project-root relative. */
+  readonly source: string;
+  readonly test: string;
+  readonly api: string;
+  /** The judgment's instruction, as the report labels the step. */
+  readonly instruction: string;
+  /** The parts of the instruction the code does not check, as the judge named them. */
+  readonly uncovered: readonly string[];
+  /** The screenshot of the screen the judgment passed on, in the run's artifacts, project-root relative. */
+  readonly screenshot?: string;
+  /** Why there is no screenshot. */
+  readonly screenshotWithheld?: string;
+  /** True when the judgment's test did not run in this run: the gap is what an earlier run recorded. */
+  readonly carried?: boolean;
 }
 
 /** The `run.explore` block: what `e2e explore` was asked, did, and found. */

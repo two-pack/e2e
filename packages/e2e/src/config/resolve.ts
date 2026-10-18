@@ -90,8 +90,11 @@ export interface ResolvedConfig {
   readonly cache: ResolvedCacheConfig;
   /** `--update-snapshots`: `toHaveScreenshot` rewrites a stored screenshot that differs. */
   readonly updateSnapshots: boolean;
-  /** True when `--codegen` asked attempts to record their agent steps' actions (`run/codegen.ts`). */
-  readonly codegen?: boolean;
+  /**
+   * `e2e run --codegen`: whether this run records its agent steps for code
+   * (`run/codegen.ts`), and the directory the code goes to.
+   */
+  readonly codegen: ResolvedCodegenConfig;
   readonly limits: ResolvedLimits;
   readonly credentials: ReadonlyMap<string, ResolvedCredential>;
   /** The `config.secrets` entries by name: what `secrets.get()` and an engine option take. */
@@ -178,11 +181,21 @@ const TOP_LEVEL_KEYS = new Set([
   'reporters',
   'agents',
   'cache',
+  'codegen',
   'credentials',
   'secrets',
 ]);
 
 const CACHE_KEYS = new Set(['mode', 'store', 'dir', 'strict']);
+const CODEGEN_KEYS = new Set(['outDir']);
+
+/** `codegen` as a run reads it. */
+export interface ResolvedCodegenConfig {
+  /** True when `--codegen` asked this run to record its agent steps and write code. */
+  readonly enabled: boolean;
+  /** Absolute directory the generated test files go to. */
+  readonly outDir: string;
+}
 const CACHE_MODES = new Set(['off', 'read-only', 'read-write']);
 
 const APP_BELONGS_TO_TARGET =
@@ -298,6 +311,7 @@ export function resolveConfig(
   const limits = runLimits(agents.values());
   const { cache, source: cacheSource } = resolveCacheConfig(raw, ci, options.projectRoot, cli, env);
   const output = resolveOutput(raw.output, cli.output, options.projectRoot, cache.dir, cacheSource, tests);
+  const codegen = resolveCodegen(raw.codegen, cli.codegen === true, options.projectRoot, output, cache.dir);
 
   const resolved: ResolvedConfig = {
     projectId,
@@ -325,7 +339,7 @@ export function resolveConfig(
     agents,
     cache,
     updateSnapshots: cli.updateSnapshots === true,
-    ...(cli.codegen === true ? { codegen: true } : {}),
+    codegen,
     limits,
     credentials,
     secrets,
@@ -541,6 +555,39 @@ function resolveOutput(
     }
   }
   return output;
+}
+
+/**
+ * Resolves `codegen.outDir` from the project root, `e2e-gen` when unset. The
+ * generated code is meant to be committed, so the directory must sit inside
+ * the project and apart from what the run owns: not the project root itself,
+ * not inside the output directory (whose results are rewritten and usually
+ * ignored), and not the cache directory or inside it.
+ */
+function resolveCodegen(value: unknown, enabled: boolean, projectRoot: string, output: string, cacheDir: string): ResolvedCodegenConfig {
+  if (value !== undefined && (typeof value !== 'object' || value === null || Array.isArray(value))) {
+    throw new ConfigurationError('INVALID_CONFIG', `codegen must be an object such as { outDir: 'e2e-gen' }, got ${describeValue(value)}`);
+  }
+  const record = (value ?? {}) as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (!CODEGEN_KEYS.has(key)) throw new ConfigurationError('INVALID_CONFIG', `codegen has unknown key "${key}"; expected outDir`);
+  }
+  const configured = record['outDir'];
+  if (configured !== undefined && (typeof configured !== 'string' || configured.trim() === '')) {
+    throw new ConfigurationError('INVALID_CONFIG', `codegen.outDir must be a non-empty path relative to the project root, got ${describeValue(configured)}`);
+  }
+  const outDir = path.resolve(projectRoot, (configured as string | undefined) ?? 'e2e-gen');
+  const named = configured === undefined ? 'codegen.outDir "e2e-gen" (the default)' : `codegen.outDir ${JSON.stringify(configured)}`;
+  const root = realpathOfExisting(projectRoot);
+  const real = realpathOfExisting(outDir);
+  const refuse = (reason: string): never => {
+    throw new ConfigurationError('INVALID_CONFIG', `${named} ${reason}`);
+  };
+  if (real === root) refuse('is the project root; name a directory of its own for the generated code, such as \'e2e-gen\'');
+  if (!isWithin(real, root)) refuse(`is outside the project root ${projectRoot}; name a directory inside it`);
+  if (isWithin(real, realpathOfExisting(output))) refuse(`is inside the output directory ${path.relative(root, realpathOfExisting(output))}; keep the generated code apart from the run's results`);
+  if (isWithin(real, realpathOfExisting(cacheDir))) refuse(`is the cache directory ${path.relative(root, realpathOfExisting(cacheDir))} or inside it`);
+  return { enabled, outDir };
 }
 
 const ARTIFACTS_KEYS = new Set(['store']);

@@ -288,7 +288,7 @@ export function gapComments(gap: CodegenJudgmentGap, converted: boolean): string
     ...gap.uncovered.map((part) => `//   Not checked: ${commentText(part)}`),
     ...gap.dropped.map(({ check, reason }) => `//   Dropped ${check === undefined ? 'a check whose content is withheld' : commentText(check)}: ${commentText(reason)}`),
     ...(gap.screenshot !== undefined
-      ? [`//   Screenshot of the screen it passed on: ./${commentText(gap.screenshot)}`]
+      ? [`//   Screenshot of the screen it passed on: ${commentText(gap.screenshot)}`]
       : gap.screenshotWithheld === undefined
         ? []
         : [`//   No screenshot: ${commentText(gap.screenshotWithheld)}`]),

@@ -34,7 +34,7 @@ import {
 } from '../internal/errors.ts';
 import { loadAiSdk } from '../agent/ai-sdk.ts';
 import { AiTraceCollector, AiTraceRecorder, registerAiTraceRecorder } from '../internal/ai-trace.ts';
-import { CodegenCollector, codegenGapWarnings, reportCodegen, type CodegenOutput } from './codegen.ts';
+import { CodegenSync, codegenGapWarnings, reportCodegen, type CodegenCollectionView, type CodegenOutput } from './codegen-sync.ts';
 import { DebugTrace } from '../internal/debug.ts';
 import { resultId, timestamp, uuidv7 } from '../internal/ids.ts';
 import type { ExploreProgress } from '../explore/progress.ts';
@@ -388,7 +388,9 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
   let startedAt = timestamp();
   const debug = new DebugTrace(options.debug === true);
   const aiTrace = options.aiTrace === true ? new AiTraceCollector() : undefined;
-  const codegen = options.codegen === true ? new CodegenCollector() : undefined;
+  const codegen = options.codegen === true ? new CodegenSync() : undefined;
+  /** The test files this run collected, for `--codegen` to tell a test or file the project no longer has. */
+  let codegenCollection: CodegenCollectionView | undefined;
   /** The in-process recorder; child-process workers own their own. */
   let aiTraceRecorder: AiTraceRecorder | undefined;
   const interruptController = new AbortController();
@@ -637,9 +639,13 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
   const writeCodegen = async (config: ResolvedConfig): Promise<CodegenOutput | undefined> => {
     if (codegen === undefined) return undefined;
     try {
-      const output = await codegen.write(config);
+      if (codegenCollection === undefined) return undefined;
+      const output = await codegen.write(config, codegenCollection, runId);
       for (const { target, engine } of output.unsupported) {
         notice(target, `--codegen wrote no code for target "${target}": engine "${engine}" declares no codegen`);
+      }
+      for (const file of output.overwritten) {
+        emit({ type: 'notice', target: 'run', message: `--codegen wrote ${file} over edits made to it since e2e last wrote it`, level: 'warning' });
       }
       for (const message of codegenGapWarnings(output.gaps)) emit({ type: 'notice', target: 'run', message, level: 'warning' });
       return output;
@@ -813,6 +819,11 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       return;
     }
     const { collection, selection } = planned;
+    codegenCollection = {
+      full: options.tests === undefined,
+      files: new Map(collection.files.map((entry) => [entry.file, entry.tests.map((test) => test.id)])),
+      uncollected: new Set(collection.uncollected.map((skipped) => skipped.file)),
+    };
     if (!interrupted.aborted) {
       for (const skipped of collection.uncollected) {
         const why = options.tests === undefined ? 'which no positional selected' : 'collected only for its setup tests';

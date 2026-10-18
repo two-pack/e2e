@@ -109,8 +109,8 @@ export interface CodegenJudgmentGap {
   readonly dropped: readonly CodegenDroppedCheck[];
   /**
    * A screenshot of the screen the judgment passed on, redacted like every
-   * screenshot the run keeps, by its path relative to the written file;
-   * the runner puts it beside the file before `render` is called.
+   * screenshot the run keeps, by its project-root relative path in the run's
+   * artifacts: a later run may clear it.
    */
   readonly screenshot?: string;
   /** Why there is no `screenshot`, in a phrase: `a secret was filled earlier in this attempt, …`. */

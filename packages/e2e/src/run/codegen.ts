@@ -9,14 +9,11 @@
  * model or a replay performed them. The last attempt's recordings ride the
  * test's result message to the runner.
  *
- * In the runner, `CodegenCollector` pairs the recordings with the steps of the
- * passing results, groups the tests by file and target, and hands each group
- * to the target engine's `codegen.render`. The runner never reads the code it
- * gets back; it writes it under `<output>/codegen/<target>/`.
+ * In the runner, `CodegenSync` (`codegen-sync.ts`) keeps each test's last
+ * passing recordings across runs and hands each e2e file to the target
+ * engine's `codegen.render`, one generated file per e2e file.
  */
 
-import { copyFile, mkdir, readFile, rm } from 'node:fs/promises';
-import path from 'node:path';
 import { containerKey, describeTarget, type RecordableAction } from '../agent/actions.ts';
 import { TraceRecorder } from '../cache/recorder.ts';
 import { bound, MAX_TRACE_DESCRIPTOR_CHARS, type DerivedReason, type RecordedAction } from '../cache/trace.ts';
@@ -25,23 +22,14 @@ import { relocateDescriptor } from '../cache/relocate.ts';
 import { carriesSecretMarker } from '../internal/redact.ts';
 import { isEditable } from '../internal/roles.ts';
 import { collapseText } from '../internal/text.ts';
-import type { ResolvedConfig } from '../config/resolve.ts';
-import type { ReportCodegen } from '../report/build.ts';
 import type {
-  CodegenFile,
   CodegenJudgment,
   CodegenRecording,
   CodegenScreenNode,
-  CodegenStep,
   CodegenTargetDescriptor,
-  CodegenTest,
   EngineCodegen,
 } from '../engine/codegen.ts';
 import type { StandardReading } from '../engine/contract.ts';
-import { writeTextReport } from '../report/write.ts';
-import { sanitizePathSegment } from './artifacts.ts';
-import { outputLayout } from './output.ts';
-import type { ResultRecord } from './records.ts';
 
 /** Where the screen a judgment passed on was saved in the worker, as an absolute file, or why it was not. */
 export type CodegenScreenshot = { readonly file: string } | { readonly withheld: string };
@@ -58,6 +46,12 @@ export interface CodegenStepData {
 export interface CodegenAttempt {
   readonly attemptId: string;
   readonly steps: Readonly<Record<string, CodegenStepData>>;
+  /**
+   * True when the attempt failed in a way that says something about the app,
+   * as the replay cache judges it: the test's earlier code is then dropped.
+   * False for a pass, an interrupt, and a failure where no model answered.
+   */
+  readonly implicates: boolean;
 }
 
 /** What an `agent.act` step tells its recording, mirroring the replay cache's recording calls. */
@@ -289,6 +283,7 @@ export class CodegenLog {
   private readonly judgments = new Map<string, { readonly judgment: CodegenJudgment; readonly screenshot: CodegenScreenshot | undefined }>();
   /** What the attempt's screens showed, oldest first. */
   readonly seen = new SeenScreens();
+  private implicates = false;
 
   constructor(
     readonly attemptId: string,
@@ -338,6 +333,11 @@ export class CodegenLog {
     this.judgments.set(stepId, { judgment, screenshot });
   }
 
+  /** Records how the attempt ended: whether its failure says something about the app (`CodegenAttempt.implicates`). */
+  settle(implicates: boolean): void {
+    this.implicates = implicates;
+  }
+
   /** The act steps that committed at least one action and the judgments that passed, by step id. */
   snapshot(): CodegenAttempt {
     const steps: Record<string, CodegenStepData> = {};
@@ -354,7 +354,7 @@ export class CodegenLog {
     for (const [stepId, { judgment, screenshot }] of this.judgments) {
       steps[stepId] = { ...steps[stepId], judgment, ...(screenshot === undefined ? {} : { screenshot }) };
     }
-    return { attemptId: this.attemptId, steps };
+    return { attemptId: this.attemptId, steps, implicates: this.implicates };
   }
 }
 
@@ -367,243 +367,4 @@ function withExtras(action: RecordedAction, extras: ActionExtras | undefined): R
     return { ...action, target, destination };
   }
   return { ...action, target };
-}
-
-/** What one `--codegen` write produced. */
-export interface CodegenOutput {
-  /** Absolute `<output>/codegen` directory. */
-  readonly dir: string;
-  /** Absolute paths of the files written, in write order. */
-  readonly files: readonly string[];
-  /** Targets with passing tests whose engine declares no `codegen`. */
-  readonly unsupported: readonly { readonly target: string; readonly engine: string }[];
-  /** The judgments the code does not prove whole, in write order. */
-  readonly gaps: readonly CodegenGapRecord[];
-}
-
-/**
- * One judgment the generated code does not prove whole: `partial` when its
- * checks prove only some of it, `unconverted` when no check could be kept and
- * the code throws in its place.
- */
-export interface CodegenGapRecord {
-  /** The written file, project-root relative with `/` separators. */
-  readonly file: string;
-  /** The one-based line of the file the judgment starts at. */
-  readonly line: number;
-  readonly kind: 'partial' | 'unconverted';
-  /** The e2e test file the judgment ran in, project-root relative. */
-  readonly source: string;
-  readonly test: string;
-  readonly api: string;
-  /** The judgment's instruction, as the report labels the step. */
-  readonly instruction: string;
-  /** The parts of the instruction the code does not check, as the judge named them. */
-  readonly uncovered: readonly string[];
-  /** The screenshot of the screen the judgment passed on, beside the written file, project-root relative. */
-  readonly screenshot?: string;
-  /** Why there is no screenshot. */
-  readonly screenshotWithheld?: string;
-}
-
-/** One test on its way to a file: its target, file, and steps, and the screenshots of its judgments with a gap by step index. */
-interface CollectedTest {
-  readonly result: ResultRecord;
-  readonly test: CodegenTest;
-  readonly screenshots: ReadonlyMap<number, CodegenScreenshot>;
-}
-
-/** Collects passing results and their recordings in the runner, then writes the engines' code. */
-export class CodegenCollector {
-  private readonly tests: CollectedTest[] = [];
-
-  /**
-   * Keeps a result whose last attempt passed, with the recordings that
-   * attempt shipped. A serial member carries its steps on its group and is
-   * left out, as is a failing, skipped, or interrupted result: code written
-   * from a run that did not pass would freeze a broken flow.
-   */
-  add(result: ResultRecord, recordings: CodegenAttempt | undefined): void {
-    const attempt = result.attempts.at(-1);
-    if (attempt === undefined || attempt.status !== 'passed') return;
-    const recorded = recordings?.attemptId === attempt.id ? recordings.steps : {};
-    const screenshots = new Map<number, CodegenScreenshot>();
-    const steps = attempt.steps.map((step, index): CodegenStep => {
-      const data = recorded[step.id];
-      if (data?.screenshot !== undefined) screenshots.set(index, data.screenshot);
-      return {
-        api: step.api,
-        label: step.label,
-        ...(step.source === undefined ? {} : { line: step.source.line, column: step.source.column }),
-        ...(data?.recording === undefined ? {} : { recording: data.recording }),
-        ...(data?.judgment === undefined ? {} : { judgment: data.judgment }),
-      };
-    });
-    this.tests.push({ result, test: { title: result.test.title, titlePath: [...result.test.titlePath], steps }, screenshots });
-  }
-
-  /**
-   * Replaces `<output>/codegen` with one file per test file and target, in
-   * the order the tests were declared. A target whose engine writes no code
-   * is reported back, not failed: the run asked every target, and only some
-   * engines speak a test language of their own.
-   */
-  async write(config: ResolvedConfig): Promise<CodegenOutput> {
-    const dir = outputLayout(config.output).codegen;
-    await rm(dir, { recursive: true, force: true });
-    const groups = new Map<string, CollectedTest[]>();
-    for (const collected of this.tests) {
-      const key = JSON.stringify([collected.result.target.name, collected.result.test.file]);
-      const group = groups.get(key) ?? [];
-      group.push(collected);
-      groups.set(key, group);
-    }
-    const files: string[] = [];
-    const gaps: CodegenGapRecord[] = [];
-    const unsupported = new Map<string, string>();
-    for (const group of groups.values()) {
-      const first = group[0]!;
-      const { target } = first.result;
-      const codegen = target.engine?.codegen;
-      if (codegen === undefined) {
-        unsupported.set(target.name, target.engine?.name ?? 'none');
-        continue;
-      }
-      const ordered = group.toSorted(
-        (a, b) => a.result.test.declarationIndex - b.result.test.declarationIndex || a.result.repeat - b.result.repeat,
-      );
-      const source = await readFile(path.join(config.projectRoot, first.result.test.file), 'utf8').catch(() => undefined);
-      const usernames = Object.fromEntries([...config.credentials.values()].map((credential) => [credential.name, credential.username]));
-      const file: CodegenFile = {
-        file: first.result.test.file,
-        target: target.name,
-        ...(target.app.base === undefined ? {} : { appUrl: target.app.base.href }),
-        ...(source === undefined ? {} : { source }),
-        ...(Object.keys(usernames).length === 0 ? {} : { usernames }),
-        tests: [],
-      };
-      const unique = uniqueTests(ordered);
-      const output = path.join(dir, sanitizePathSegment(target.name), ...outputSegments(file.file, codegen.extension));
-      const tests = await withScreenshots(unique, output);
-      const rendered = codegen.render({ ...file, tests });
-      await writeTextReport(output, rendered.code);
-      files.push(output);
-      const written = path.relative(config.projectRoot, output).split(path.sep).join('/');
-      for (const site of rendered.gaps) {
-        const test = tests[site.test];
-        const step = test?.steps[site.step];
-        const gap = step?.judgment?.gap;
-        if (test === undefined || step === undefined || gap === undefined) continue;
-        gaps.push({
-          file: written,
-          line: site.line,
-          kind: (step.judgment?.checks.length ?? 0) === 0 ? 'unconverted' : 'partial',
-          source: file.file,
-          test: test.title,
-          api: step.api,
-          instruction: step.label,
-          uncovered: gap.uncovered,
-          ...(gap.screenshot === undefined
-            ? {}
-            : { screenshot: path.relative(config.projectRoot, path.join(path.dirname(output), gap.screenshot)).split(path.sep).join('/') }),
-          ...(gap.screenshotWithheld === undefined ? {} : { screenshotWithheld: gap.screenshotWithheld }),
-        });
-      }
-    }
-    return { dir, files, unsupported: [...unsupported].map(([targetName, engine]) => ({ target: targetName, engine })), gaps };
-  }
-}
-
-/** The report's `run.codegen` block for what a write produced, its paths project-root relative. */
-export function reportCodegen(output: CodegenOutput, projectRoot: string): ReportCodegen {
-  const relative = (file: string): string => path.relative(projectRoot, file).split(path.sep).join('/') || '.';
-  return { dir: relative(output.dir), files: output.files.map(relative), gaps: output.gaps };
-}
-
-/** Most file locations one warning lists; the rest are counted. */
-const MAX_WARNED_LOCATIONS = 5;
-
-/**
- * The warnings a run prints for the judgments its code does not prove whole:
- * one line for those only partly converted, one for those not converted at
- * all, each naming where they are in the written files.
- */
-export function codegenGapWarnings(gaps: readonly CodegenGapRecord[]): string[] {
-  const line = (kind: CodegenGapRecord['kind'], says: (count: number) => string): string[] => {
-    const matching = gaps.filter((gap) => gap.kind === kind);
-    if (matching.length === 0) return [];
-    const locations = matching.slice(0, MAX_WARNED_LOCATIONS).map((gap) => `${gap.file}:${String(gap.line)}`);
-    const more = matching.length - locations.length;
-    // The screenshots sit in one folder per file; naming each would make the line unreadable.
-    const folders = [...new Set(matching.flatMap((gap) => (gap.screenshot === undefined ? [] : [path.posix.dirname(gap.screenshot)])))];
-    const shots = folders.length === 0 ? '' : `; screenshots in ${folders.join(', ')}`;
-    return [`--codegen: ${says(matching.length)} (${locations.join(', ')}${more > 0 ? `, and ${String(more)} more` : ''})${shots}`];
-  };
-  const judgments = (count: number): string => `${String(count)} ${count === 1 ? 'judgment was' : 'judgments were'}`;
-  return [
-    ...line('partial', (count) => `${judgments(count)} only partly converted`),
-    ...line('unconverted', (count) => `${judgments(count)} not converted; the code throws in place of each`),
-  ];
-}
-
-/**
- * One entry per test: a test run as several agents or repeats passed more
- * than once, and its first passing run stands for the rest.
- */
-function uniqueTests(ordered: readonly CollectedTest[]): CollectedTest[] {
-  const seen = new Set<string>();
-  const tests: CollectedTest[] = [];
-  for (const collected of ordered) {
-    if (seen.has(collected.result.test.id)) continue;
-    seen.add(collected.result.test.id);
-    tests.push(collected);
-  }
-  return tests;
-}
-
-/**
- * The tests with each judgment's screenshot put beside the file the code is
- * written to, `<file>.gaps/<test>-<step>.png`, and named on its gap by its
- * path from the file; a screenshot that could not be copied, or never was
- * taken, says why instead.
- */
-async function withScreenshots(collected: readonly CollectedTest[], output: string): Promise<CodegenTest[]> {
-  return Promise.all(
-    collected.map(async ({ test, screenshots }, testIndex) => ({
-      ...test,
-      steps: await Promise.all(
-        test.steps.map(async (step, stepIndex): Promise<CodegenStep> => {
-          const gap = step.judgment?.gap;
-          const screenshot = screenshots.get(stepIndex);
-          if (step.judgment === undefined || gap === undefined || screenshot === undefined) return step;
-          if ('withheld' in screenshot) return { ...step, judgment: { ...step.judgment, gap: { ...gap, screenshotWithheld: screenshot.withheld } } };
-          const name = `${path.basename(output)}.gaps/${String(testIndex + 1)}-${String(stepIndex + 1)}${path.extname(screenshot.file) || '.png'}`;
-          try {
-            await mkdir(path.join(path.dirname(output), path.dirname(name)), { recursive: true });
-            await copyFile(screenshot.file, path.join(path.dirname(output), name));
-          } catch {
-            return { ...step, judgment: { ...step.judgment, gap: { ...gap, screenshotWithheld: SCREENSHOT_NOT_COPIED } } };
-          }
-          return { ...step, judgment: { ...step.judgment, gap: { ...gap, screenshot: name } } };
-        }),
-      ),
-    })),
-  );
-}
-
-/** Why a gap names no screenshot when the one the step took could not be put beside the file. */
-const SCREENSHOT_NOT_COPIED = 'the screenshot the step took could not be copied beside this file';
-
-/** The suffixes a test file name carries that the written file replaces with the engine's extension. */
-const TEST_FILE_SUFFIX = /(?:\.e2e)?\.[cm]?[jt]sx?$/u;
-
-/**
- * The path segments a test file's code is written at under the target's
- * directory: the file's own path, each segment sanitized so nothing climbs
- * out of it, with the engine's extension in place of the test suffix.
- */
-function outputSegments(file: string, extension: string): string[] {
-  const segments = file.split('/').filter((segment) => segment !== '' && segment !== '.');
-  const name = segments.pop() ?? 'tests';
-  return [...segments.map(sanitizePathSegment), sanitizePathSegment(`${name.replace(TEST_FILE_SUFFIX, '')}${extension}`)];
 }
