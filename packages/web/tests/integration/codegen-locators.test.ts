@@ -50,13 +50,18 @@ function field(value: string | undefined): string | undefined {
 /** What a node shows when the standard gives it no name, as `shownTextOf` in e2e records it beside the descriptor. */
 function shownTextOf(node: SemanticNode): string | undefined {
   if (node.standard?.name !== '' || field(node.name) === undefined) return undefined;
-  const parts: string[] = [];
-  const collect = (current: SemanticNode): void => {
-    if (current.text !== undefined && current.text.trim() !== '') parts.push(current.text);
-    for (const child of current.children ?? []) collect(child);
-  };
-  collect(node);
-  return field(parts.join(' '));
+  return field(displayedTextOf(node));
+}
+
+/** The text a node and its descendants show, a child the node's own line already reads counted once, as `displayedTextOf` in e2e reads it. */
+function displayedTextOf(node: SemanticNode): string {
+  const own = (node.text ?? '').replace(/\s+/gu, ' ').trim();
+  const parts = own === '' ? [] : [own];
+  for (const child of node.children ?? []) {
+    const shown = displayedTextOf(child);
+    if (shown !== '' && !own.includes(shown)) parts.push(shown);
+  }
+  return parts.join(' ').replace(/\s+/gu, ' ').trim();
 }
 
 /** The descriptor the recording would keep for a node it acted on (`describeTarget` in e2e), without placement. */

@@ -314,9 +314,11 @@ project-relative path you configure.
 | `results/.../downloads/*` | Files the app served. See [Downloads](#downloads). | complete or incomplete |
 | `results/.../screen-at-failure.txt` | The redacted tree at the moment of failure. | complete |
 | `ai-trace.json` | Every model call, opt-in through `--ai-trace`. Prompts are the redacted ones the model saw. Inline image bytes are replaced by their size. | as the prompt |
+| `codegen/<target>/*.json` | What `--codegen` keeps to write test code from: the test source's digest, the agent's recorded actions, the checks its judgments rested on, and a failure's redacted error. Values and names pass the redactor the replay cache uses, a check's text must read the same after redaction, and an extracted value the redactor would alter is left out. A secret fill names the environment variable that holds the secret, never its value. | secret-free by construction |
 | `sessions/<runId>/` | Encrypted sessions, deleted at cleanup. | encrypted |
 | `videos/<session>/*.webm`, `*.mp4` | Videos an `e2e mcp` session recorded with `start_recording`, kept until you delete them. Never handed to `artifacts.store`. | none |
 | `cache.dir` (default `.e2e/cache/`) | Replay cache entries. | secret-free by construction |
+| `codegen.outDir` (default `e2e-gen/`) | Test code `--codegen` wrote from the records above, meant to be committed. Its comments quote the judge's redacted explanations and a failure's redacted error, and name screenshots in `results/`. Not under `output`. | secret-free by construction |
 | The path in `command.log` | Your app's stdout and stderr, verbatim. Must be inside the project root. | none |
 
 An `artifacts.store` receives each artifact's bytes as they're produced,

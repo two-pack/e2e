@@ -97,6 +97,7 @@ rules:
 | `keyboard`, `state`, `artifacts`, `session` | An unknown key or a non-function member. `keyboard` without `type` and `press`; `state` without both `capture` and `restore`; `artifacts` without `screenshot`; `startVideo` without `stopVideo`, or the reverse. |
 | `secrets` | Not an array of `secrets.get()` handles. |
 | `fixtures` | Not an object, a fixture that is not a factory function, or a fixture name that is not a lower-camel identifier or shadows `agent`, `app`, `screen`, `platform`, or `session`. |
+| `codegen` | Not an object of exactly `extension` (a file extension with its leading dot, such as `.spec.ts`), a `render` function, and an optional `locate` function. |
 
 <Note>
 `artifacts.startTrace` and `artifacts.stopTrace` were removed from the
@@ -129,6 +130,7 @@ The body of one target. Every member but `name`, `version`, and
 | [`validateApp`](#app) | method |
 | [`secrets`](#startattempt) | `Secret[]` |
 | [`session`](#session) | `EngineSession` |
+| [`codegen`](#code-generation) | `EngineCodegen` |
 | [`prepare`, `finish`, `init`, `startAttempt`, `settleAttempt`, `endAttempt`, `dispose`](#lifecycle) | hooks |
 
 ```ts
@@ -250,6 +252,8 @@ export interface Engine {
   readonly secrets?: readonly Secret[];
   /** Steering hooks: open, back, restart, reset. */
   readonly session?: EngineSession;
+  /** Turns a run's recorded agent steps into this engine's own test code; see `EngineCodegen`. */
+  readonly codegen?: EngineCodegen;
   /**
    * Runs once per target in the runner, after collection and before workers,
    * app commands, and the run's clock start. Download dependencies or boot
@@ -354,6 +358,7 @@ member. Three gaps end differently:
 | `artifacts` | `artifacts` | - | Screenshots and videos. |
 | `validateApp` | - | - | A config-load check of the target's `app`. |
 | `session` | - | - | The `app` steering methods and the agent's `navigate` and `back` verbs. |
+| `codegen` | - | - | `e2e run --codegen` writing the target's tests as this engine's own test code; see [Code generation](#code-generation). |
 
 #### Agent verbs
 
@@ -1940,6 +1945,189 @@ export function stopProviderRecording(
   `.html`) through the ledger and labels it `complete`.
 - Every other download keeps its bytes and carries
   `redaction: 'incomplete'`.
+
+### Code generation
+
+`e2e run --codegen` records every action an `agent.act` step commits,
+whether the model or a cache replay chose it, and, for each judgment
+(`agent.assert`, `agent.waitFor`, `agent.extract`) that passes, the
+deterministic checks that prove it: one more judge call about the same
+observation, whose proposals the runner keeps only where that observation
+bears them out. After the run it hands each target's tests to its engine, one
+test file at a time, with the file's source and every test's last recordings,
+of a pass or of a failure that implicates the app, kept across runs. The runner writes the `code` `render` returns
+under `codegen.outDir`, at the test file's path with its `.e2e.ts` suffix
+replaced by `extension`, and reads it only to tell whether it changed. A
+judgment whose checks do not prove all of it carries a `gap`; the engine
+writes what it says into the code and returns the line of each such judgment
+in `gaps`, which the runner prints as a warning and records under
+`run.codegen` in the report. While a run confirms a judgment's checks, the
+runner asks `locate`, when the engine has one, which nodes of the screen the
+locator `render` would write for a check's node finds: it keeps a check only
+when that is the node alone (or its twins, for a node with a `position`),
+and offers an element as gone only when it finds nothing. A target whose engine declares no `codegen` gets
+a notice. A `render` that throws is a `REPORT_WRITE_FAILED` run error.
+
+```ts
+/** Writes recorded agent steps out as the engine's own test code (`e2e run --codegen`). */
+export interface EngineCodegen {
+  /** The extension of the files `render` writes, with its leading dot: `.spec.ts`. */
+  readonly extension: string;
+  /** Returns the source text for one test file's tests. Runs in the runner process after the run. */
+  render(file: CodegenFile): CodegenRendered;
+  /** The ids of the nodes of `screen` the locator `render` writes for `target` finds, in document order; undefined when it cannot tell. Runs in the worker. */
+  locate?(target: CodegenTargetDescriptor, screen: readonly CodegenScreenNode[]): readonly string[] | undefined;
+}
+
+/** One node of a screen as `locate` reads it; every text is the redacted one the agent read. */
+export interface CodegenScreenNode {
+  readonly id: string;
+  readonly parent?: string;
+  readonly role?: string;
+  readonly name?: string;
+  /** What the node and its descendants show; its name for a leaf that shows nothing else. */
+  readonly shownText: string;
+  readonly testId?: string;
+  readonly placeholder?: string;
+  readonly standard?: StandardReading;
+  /** The container key a descriptor's `within` would name for it. */
+  readonly within?: string;
+  readonly hidden?: boolean;
+}
+
+/** What `render` returns: the code, and where it says a judgment was not converted whole. */
+export interface CodegenRendered {
+  readonly code: string;
+  /** Each judgment step with a `gap`, once: indexes into `tests` and that test's `steps`, and its one-based line in `code`. */
+  readonly gaps: readonly { readonly test: number; readonly step: number; readonly line: number }[];
+  /** Each test with a `failure` (on a step or on the test), once: its index into `tests` and the line its comment starts at. */
+  readonly failures: readonly { readonly test: number; readonly line: number }[];
+}
+
+/** How a test failed in the run its code was written from; the code stops there. */
+export interface CodegenFailure {
+  readonly code: string;
+  /** Redacted, as the report records it. */
+  readonly message: string;
+  /** For a judgment that did not hold: the judge's explanation. */
+  readonly explanation?: string;
+  /** The screenshot taken at the failure, in the run's artifacts, project-root relative. */
+  readonly screenshot?: string;
+  readonly screenshotWithheld?: string;
+}
+
+/** One test file's passing tests on one target: the unit `render` writes. */
+export interface CodegenFile {
+  /** The e2e test file, project-root relative with `/` separators. */
+  readonly file: string;
+  readonly target: string;
+  /** The target app's base URL, when it has one. */
+  readonly appUrl?: string;
+  /** The test file's source text, to convert with its control flow intact; absent when it could not be read. */
+  readonly source?: string;
+  /** The configured credentials' usernames by credential name; passwords are never handed over. */
+  readonly usernames?: Readonly<Record<string, string>>;
+  readonly tests: readonly CodegenTest[];
+}
+
+/** One passing test, by title, with its steps. */
+export interface CodegenTest {
+  readonly title: string;
+  /** Describe titles, outermost first, then the test's own. */
+  readonly titlePath: readonly string[];
+  readonly steps: readonly CodegenStep[];
+  /** How the test failed when no agent step carries it: its own code, a hook, or the body threw, with the step it failed at when one did. */
+  readonly failure?: CodegenFailure & { readonly api?: string; readonly label?: string; readonly line?: number };
+}
+
+/** One step of a passing test, in the order it ran. */
+export interface CodegenStep {
+  /** The public API the step ran through: `agent.act`, `agent.assert`, a locator action, `app.open`. */
+  readonly api: string;
+  /** The step's label as the report shows it, redacted: the instruction of an agent step. */
+  readonly label: string;
+  /** The test file line and column the step was called from, when known. */
+  readonly line?: number;
+  readonly column?: number;
+  /** Present for an `agent.act` step that committed at least one action. */
+  readonly recording?: CodegenRecording;
+  /** Present for a judgment step that passed. */
+  readonly judgment?: CodegenJudgment;
+  /** Present on the agent step the test failed at. */
+  readonly failure?: CodegenFailure;
+}
+
+/** What one `agent.act` step did, as recorded while it ran. */
+export interface CodegenRecording {
+  /** Where the surface was when the step's first action ran, redacted; absent when it has no location. */
+  readonly startLocation?: string;
+  /** Committed actions in order. Secret fills carry the secret's name, never its value. */
+  readonly actions: readonly CodegenAction[];
+  /** True when the recording could not keep an action whole; code written from it may not reproduce the step. */
+  readonly incomplete: boolean;
+}
+
+/** What a judgment step left for code: the checks that prove it, and an extraction's value. */
+export interface CodegenJudgment {
+  /** Empty when no check could be derived. */
+  readonly checks: readonly CodegenCheck[];
+  /** The value `agent.extract` returned, redacted; absent when it carried a secret. */
+  readonly value?: unknown;
+  /** Present when the checks do not prove the whole judgment. */
+  readonly gap?: CodegenJudgmentGap;
+}
+
+/** What a judgment's checks leave unproven: the judge's account, redacted, never a fact the runner checked. */
+export interface CodegenJudgmentGap {
+  /** The judge's explanation of its verdict; absent when it gave none or it carried a secret. */
+  readonly explanation?: string;
+  /** The parts of the instruction no kept check proves, as the judge named them. */
+  readonly uncovered: readonly string[];
+  /** The checks the judge proposed that the runner did not keep: the check (absent when it carried a secret) and why. */
+  readonly dropped: readonly { readonly check?: string; readonly reason: string }[];
+  /** A screenshot of the screen it passed on, in the run's artifacts, project-root relative. */
+  readonly screenshot?: string;
+  /** Why there is no screenshot. */
+  readonly screenshotWithheld?: string;
+}
+
+/** One fact a judgment rested on, as it held on the screen the judgment passed on. */
+export type CodegenCheck =
+  | { readonly kind: 'visible'; readonly target: CodegenTargetDescriptor }
+  | { readonly kind: 'text'; readonly target: CodegenTargetDescriptor; readonly text: string }
+  | { readonly kind: 'value'; readonly target: CodegenTargetDescriptor; readonly value: string }
+  | { readonly kind: 'checked'; readonly target: CodegenTargetDescriptor; readonly checked: boolean }
+  | { readonly kind: 'enabled'; readonly target: CodegenTargetDescriptor; readonly enabled: boolean }
+  /** Exactly `count` nodes with the role are on screen. */
+  | { readonly kind: 'count'; readonly role: string; readonly count: number }
+  /** The nodes with the role show these texts, in this order (others may sit between them). */
+  | { readonly kind: 'order'; readonly role: string; readonly texts: readonly string[] }
+  /** No node on screen shows the text, which an earlier screen of the test showed. */
+  | { readonly kind: 'absent'; readonly text: string }
+  /** The node an earlier screen of the test showed is on screen nowhere; no `within` or `position`. */
+  | { readonly kind: 'gone'; readonly target: CodegenTargetDescriptor }
+  | { readonly kind: 'url'; readonly location: string };
+```
+
+`CodegenAction` is the action union the [replay cache](/cache) records:
+`tap`, `doubleTap`, `longPress`, `secondaryTap`, `hover`, `scrollTo`, `type`,
+`typeSecret` (by secret name), `press`, `select`, `check`, `upload`, `drag`,
+`scroll`, `scrollUntil`, `navigate`, `back`, `tapAt`, `hoverAt`, `typeText`,
+`pressKey`, `dismissKeyboard`, and `tool`, a gap for a project tool or a typed
+value the run read off the screen. A node is a `CodegenTargetDescriptor`:
+its role, name, text, test id, placeholder, the key of the row or other
+container it sat in (`within`), its place among identical twins
+(`position`), the node's `standard` reading when the engine reported it its
+own way (`SemanticNode.standard`), and `shownText`, the text the node shows,
+present when the standard gives it no name but the engine named it from its
+content (a list row named from its children's names, a button's label among
+them). The values are redacted like everything the cache keeps. An engine
+that reads nodes its own way for the model sets `standard` on them, so its
+code generation can write locators in the platform's own terms.
+
+Only a test whose last attempt passed brings steps; the source still holds
+the others. A serial group's members and tests registered in memory are
+left out.
 
 ### Contributed fixtures
 

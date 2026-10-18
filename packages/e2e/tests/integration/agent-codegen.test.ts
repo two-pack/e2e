@@ -179,7 +179,7 @@ const OTHER = path.join('e2e-gen', 'tests', 'other.gen.spec.ts');
 const posix = (file: string): string => file.split(path.sep).join('/');
 
 /** The screenshot line of a judgment's note, naming a file in the run's artifacts. */
-const SCREENSHOT_LINE = /^\/\/ {3}Screenshot of the screen it passed on: (\.e2e\/artifacts\/\S+\.png)$/u;
+const SCREENSHOT_LINE = /^\/\/ {3}Screenshot of the screen it passed on: (\.e2e\/results\/\S+\.png)$/u;
 
 describe('--codegen on the in-process transport', () => {
   let app: FixtureApp;
@@ -312,7 +312,7 @@ describe('--codegen on the in-process transport', () => {
         '  //   Not checked: nothing is broken',
       ].join('\n'),
     );
-    expect(code).toMatch(/ {2}\/\/ {3}Screenshot of the screen it passed on: \.e2e\/artifacts\/\S+\.png\n {2}await expect\(page\.getByRole\("button", \{ name: "Increment", exact: true \}\)\)\.toHaveCount\(0\);/u);
+    expect(code).toMatch(/ {2}\/\/ {3}Screenshot of the screen it passed on: \.e2e\/results\/\S+\.png\n {2}await expect\(page\.getByRole\("button", \{ name: "Increment", exact: true \}\)\)\.toHaveCount\(0\);/u);
   });
 
   it('keeps a check only on a node the code finds alone, saying why it dropped the other', () => {
@@ -332,7 +332,7 @@ describe('--codegen on the in-process transport', () => {
     const block = code.slice(code.indexOf("test('fails after the agent acted'"));
     const lines = block.split('\n');
     expect(lines[1]).toMatch(/^ {2}\/\/ FAILED: in the run this code was written from, the test failed at line \d+ \(expect\.toHaveText getByRole\("status"\)\): ASSERTION_FAILED: /u);
-    expect(lines[2]).toMatch(/^ {2}\/\/ {3}Screenshot at the failure: \.e2e\/artifacts\/\S+\.png$/u);
+    expect(lines[2]).toMatch(/^ {2}\/\/ {3}Screenshot at the failure: \.e2e\/results\/\S+\.png$/u);
     expect(existsSync(path.join(project.dir, /: (\S+)$/u.exec(lines[2]!)![1]!))).toBe(true);
     // What the agent did before the test failed is written as the run did it; the test's own expect fails on its own line.
     expect(lines.slice(3, 7).join('\n')).toBe(
@@ -427,6 +427,24 @@ describe('--codegen on the in-process transport', () => {
     const plain = await runExisting(project, { appUrl: app.url, config: config(), runOptions: { grep: [/increments through the agent/] } });
     expect(plain.codegenFiles).toBeUndefined();
     expect(readFileSync(path.join(project.dir, SPEC), 'utf8')).toBe(before);
+  });
+
+  it('warns when it writes over a generated file edited by hand, or one it has no record of', async () => {
+    const warned: string[] = [];
+    const onEvent = (event: { type: string; level?: string; message?: string }): void => {
+      if (event.type === 'notice' && event.level === 'warning' && event.message?.includes(' over ') === true) warned.push(event.message);
+    };
+    const spec = path.join(project.dir, SPEC);
+    writeFileSync(spec, `${readFileSync(spec, 'utf8')}// edited by hand\n`, 'utf8');
+    await runExisting(project, { appUrl: app.url, config: config(), runOptions: { codegen: true, grep: [/increments through the agent/], onEvent } });
+    expect(warned).toEqual([`--codegen wrote ${posix(SPEC)} over edits made to it since e2e last wrote it`]);
+    expect(readFileSync(spec, 'utf8')).not.toContain('// edited by hand');
+
+    warned.length = 0;
+    writeFileSync(spec, `${readFileSync(spec, 'utf8')}// edited by hand\n`, 'utf8');
+    rmSync(path.join(project.dir, '.e2e', 'codegen', 'web', 'tests', 'counter.e2e.ts.json'));
+    await runExisting(project, { appUrl: app.url, config: config(), runOptions: { codegen: true, grep: [/increments through the agent/], onEvent } });
+    expect(warned).toEqual([`--codegen wrote ${posix(SPEC)} over a file e2e has no record of writing`]);
   });
 
   it('clears the generated code and its records, leaving a file no record names', async () => {

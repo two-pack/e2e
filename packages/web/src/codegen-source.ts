@@ -112,11 +112,21 @@ export function convertSource(file: CodegenFile, testIdAttribute: string): Codeg
   return new SourceConverter(file, file.source, testIdAttribute).convert(program);
 }
 
+/** Whether a value is an ESTree node: an object with a string `type` and its offsets. */
+function isAstNode(value: unknown): value is AstNode {
+  if (typeof value !== 'object' || value === null) return false;
+  const node: { readonly type?: unknown; readonly start?: unknown; readonly end?: unknown } = value;
+  return typeof node.type === 'string' && typeof node.start === 'number' && typeof node.end === 'number';
+}
+
 function parse(fileName: string, source: string): AstNode | undefined {
   try {
     const { parseSync } = createRequire(import.meta.url)('oxc-parser') as typeof import('oxc-parser');
     const result = parseSync(fileName, source, { sourceType: 'module' });
-    return result.errors.length > 0 ? undefined : (result.program as unknown as AstNode);
+    if (result.errors.length > 0) return undefined;
+    // The parser's own types describe its ESTree; the converter reads it as the plain nodes it is.
+    const program: unknown = result.program;
+    return isAstNode(program) ? program : undefined;
   } catch {
     return undefined;
   }

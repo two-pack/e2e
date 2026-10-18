@@ -257,7 +257,7 @@ describe('playwright codegen statements', () => {
       explanation: 'The login form shows and no list is on screen.\nNo task is listed.',
       uncovered: ['タスクの一覧は表示されていない'],
       dropped: [{ check: 'absent "Logout"', reason: 'the instruction does not say this text is missing' }, { reason: 'its text carries a secret' }],
-      screenshot: '.e2e/artifacts/web/tests_checkout.e2e.ts___buys_a_hat/default/attempt-0/screenshots/001-assert.png',
+      screenshot: '.e2e/results/web/tests_checkout.e2e.ts___buys_a_hat/default/attempt-0/screenshots/001-assert.png',
     };
     const file: CodegenFile = {
       ...judgedFile('agent.assert', [{ kind: 'visible', target: { role: 'button', name: 'Login' } }]),
@@ -272,7 +272,7 @@ describe('playwright codegen statements', () => {
         '  //   Not checked: タスクの一覧は表示されていない',
         '  //   Dropped absent "Logout": the instruction does not say this text is missing',
         '  //   Dropped a check whose content is withheld: its text carries a secret',
-        '  //   Screenshot of the screen it passed on: .e2e/artifacts/web/tests_checkout.e2e.ts___buys_a_hat/default/attempt-0/screenshots/001-assert.png',
+        '  //   Screenshot of the screen it passed on: .e2e/results/web/tests_checkout.e2e.ts___buys_a_hat/default/attempt-0/screenshots/001-assert.png',
         '  await expect(page.getByRole("button", { name: "Login", exact: true })).toBeVisible();',
       ].join('\n'),
     );
@@ -517,7 +517,7 @@ describe('playwright codegen from the test source', () => {
       code: 'ASSERTION_FAILED',
       message: 'the cart shows 2 hats',
       explanation: 'The status reads "2 items".',
-      screenshot: '.e2e/artifacts/web/t/attempt-0/screenshots/002-failure.png',
+      screenshot: '.e2e/results/web/t/attempt-0/screenshots/002-failure.png',
     };
     const failed: CodegenTest = {
       ...CONVERTED_TEST,
@@ -529,7 +529,7 @@ describe('playwright codegen from the test source', () => {
         '    // agent.assert: the cart holds one hat',
         '    // FAILED: in the run this code was written from, the test failed here: ASSERTION_FAILED: the cart shows 2 hats',
         "    //   The judge's explanation of its verdict (its reasoning, not a checked fact): The status reads \"2 items\".",
-        '    //   Screenshot at the failure: .e2e/artifacts/web/t/attempt-0/screenshots/002-failure.png',
+        '    //   Screenshot at the failure: .e2e/results/web/t/attempt-0/screenshots/002-failure.png',
         '    throw new Error("agent.assert(\\"the cart holds one hat\\") failed in the run this code was written from (ASSERTION_FAILED)");',
       ].join('\n'),
     );
@@ -556,13 +556,13 @@ describe('playwright codegen from the test source', () => {
   it("puts a failure in the test's own code at the top of the test, where Playwright stops on its own", () => {
     const failed: CodegenTest = {
       ...CONVERTED_TEST,
-      failure: { code: 'ASSERTION_FAILED', message: 'expected "Thanks"', api: 'expect.toHaveText', line: 12, screenshot: '.e2e/artifacts/web/t/attempt-0/screenshots/003-failure.png' },
+      failure: { code: 'ASSERTION_FAILED', message: 'expected "Thanks"', api: 'expect.toHaveText', line: 12, screenshot: '.e2e/results/web/t/attempt-0/screenshots/003-failure.png' },
     };
     const rendered = playwrightCodegen(undefined).render({ file: 'tests/checkout.e2e.ts', target: 'web', appUrl: APP_URL, source: SOURCE, tests: [failed] });
     const lines = rendered.code.split('\n');
     const top = lines.findIndex((line) => line.includes('// FAILED: in the run this code was written from, the test failed at line 12 (expect.toHaveText): ASSERTION_FAILED: expected "Thanks"'));
     expect(lines[top - 1]).toContain("test('buys a hat', async ({ page }) => {");
-    expect(lines[top + 1]?.trim()).toBe('//   Screenshot at the failure: .e2e/artifacts/web/t/attempt-0/screenshots/003-failure.png');
+    expect(lines[top + 1]?.trim()).toBe('//   Screenshot at the failure: .e2e/results/web/t/attempt-0/screenshots/003-failure.png');
     expect(rendered.failures).toEqual([{ test: 0, line: top + 1 }]);
   });
 

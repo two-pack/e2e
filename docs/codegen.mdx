@@ -1,6 +1,9 @@
 ---
 title: Export to Playwright
 description: Turn a passing run into a Playwright Test file that runs the same test without a model.
+icon: "file-code"
+"og:image": "https://e2e.tester.army/docs/images/og/codegen.png?v=c5dfca6e35"
+"twitter:image": "https://e2e.tester.army/docs/images/og/codegen.png?v=c5dfca6e35"
 ---
 
 `e2e run --codegen` writes each test file of the run as a Playwright Test
@@ -69,8 +72,8 @@ from that run. The code then stays the same while the page does. A check that
 no longer holds sends the judgment back to the judge.
 
 A generated file edited by hand since the run last wrote it is written over,
-and the run says so in a warning; keep your changes in a file of your own
-beside it. `e2e codegen clear` deletes every generated file and the records
+and the run says so in a warning, as it does for a file at that path it has
+no record of writing. Keep your changes in a file of your own beside it. `e2e codegen clear` deletes every generated file and the records
 behind them, and leaves files no record names alone.
 
 ## What you get
@@ -210,7 +213,7 @@ code then says so above the checks:
 //   The judge's explanation of its verdict (its reasoning, not a checked fact): The Login button is shown and no list is on screen.
 //   Not checked: the task list is not
 //   Dropped absent "Logout": the instruction does not say this text is missing
-//   Screenshot of the screen it passed on: .e2e/artifacts/web/tests_first.e2e.ts___signs_out/default/attempt-0/assert-5.png
+//   Screenshot of the screen it passed on: .e2e/results/web/tests_first.e2e.ts___signs_out/default/attempt-0/assert-5.png
 await expect(page.getByRole("button", { name: "Login", exact: true })).toBeVisible();
 ```
 
@@ -233,7 +236,7 @@ was filled in the attempt, nor for an `agent.assert` called with
 The run ends with a warning that points at each such judgment:
 
 ```text
-⚠ --codegen: 1 judgment was only partly converted: e2e-gen/tests/first.gen.spec.ts:27 (screenshot .e2e/artifacts/web/tests_first.e2e.ts___signs_out/default/attempt-0/assert-5.png)
+⚠ --codegen: 1 judgment was only partly converted: e2e-gen/tests/first.gen.spec.ts:27 (screenshot .e2e/results/web/tests_first.e2e.ts___signs_out/default/attempt-0/assert-5.png)
 ```
 
 and `report.json` lists them under `run.codegen.gaps`, each with the file and
@@ -252,7 +255,7 @@ code is written again from that run, up to the failure, and stops there:
 // agent.assert: the order is confirmed
 // FAILED: in the run this code was written from, the test failed here: ASSERTION_FAILED: the page shows the cart, not a confirmation
 //   The judge's explanation of its verdict (its reasoning, not a checked fact): The page still lists the hat in the cart and shows no order number.
-//   Screenshot at the failure: .e2e/artifacts/web/tests_checkout.e2e.ts___buys_a_hat/default/attempt-0/screenshots/004-failure.png
+//   Screenshot at the failure: .e2e/results/web/tests_checkout.e2e.ts___buys_a_hat/default/attempt-0/screenshots/004-failure.png
 throw new Error("agent.assert(\"the order is confirmed\") failed in the run this code was written from (ASSERTION_FAILED)");
 ```
 

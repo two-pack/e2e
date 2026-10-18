@@ -1,6 +1,6 @@
 ---
-"e2e": minor
-"@e2e-dev/web": minor
+"e2e": patch
+"@e2e-dev/web": patch
 ---
 
 Add `e2e run --codegen`. It writes each test file as the target engine's own

@@ -30,8 +30,7 @@ import type { CodegenCheck, CodegenDroppedCheck, CodegenJudgment, CodegenJudgmen
 import { codegenExtrasOf, displayedTextOf, stillShown, type CodegenLog, type CodegenScreenshot, type SeenScreens } from '../run/codegen.ts';
 import { relocateDescriptor } from '../cache/relocate.ts';
 import { carriesSecretMarker } from '../internal/redact.ts';
-import { bound } from '../cache/trace.ts';
-import { collapseText } from '../internal/text.ts';
+import { bound, collapseText } from '../internal/text.ts';
 import { CHECKS_SCHEMA, CHECKS_SCHEMA_NAME, MAX_CHECKS, validateChecksResponse, type ProposedCheck } from './protocol.ts';
 
 /** One call and one repair round, as an assertion gets. */

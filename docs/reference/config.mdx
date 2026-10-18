@@ -52,6 +52,7 @@ export default {
 | [`video`](#video) | `RecordingMode` | `'off'` |
 | [`agents`](#agents) | `Record<string, AgentConfig>` | `default`, no model |
 | [`cache`](#cache) | `CacheMode \| CacheConfig` | `'read-write'`, `'read-only'` in CI |
+| [`codegen`](#codegen) | `CodegenConfig` | `{ outDir: 'e2e-gen' }` |
 | [`credentials`](#credentials) | `Record<string, CredentialConfig>` | - |
 | [`secrets`](#secrets) | `Record<string, SecretConfig>` | - |
 
@@ -1285,6 +1286,40 @@ opt-in. Remove that line to share replays with CI and teammates. CI stays
 `read-only` unless `cache: 'read-write'` is set. See
 [Caching](/cache#commit-the-replay-cache).
 
+### codegen
+
+Where `e2e run --codegen` keeps the generated test code: one file per e2e
+file, at the e2e file's own path under `outDir`. See
+[Export to Playwright](/codegen).
+
+```ts
+codegen: { outDir: 'e2e-gen' },
+```
+
+| Option | Type | Default |
+| --- | --- | --- |
+| [`outDir`](#outdir) | `string` | `'e2e-gen'` |
+
+The declaration is under [`CodegenConfig`](#codegenconfig).
+
+#### `outDir`
+
+The directory the generated test files go to, resolved against the project
+root.
+
+```ts
+codegen: { outDir: 'e2e-gen' }, // default: 'e2e-gen'
+```
+
+The directory must be inside the project root and not the root itself, and
+neither inside [`output`](#output) nor the cache directory: the generated
+code is meant to be committed, while the run's results are not. What a run
+records to write the code from stays in `<output>/codegen/`.
+
+| Throws | When |
+| --- | --- |
+| `INVALID_CONFIG` | `outDir` is empty, the project root, outside it, inside `output`, or inside the cache directory |
+
 ## Run limits
 
 The report's `run.limits` block records the ceilings a run enforced. There is
@@ -1469,6 +1504,8 @@ export interface E2EConfig {
   agents?: Readonly<Record<string, AgentConfig>>;
   /** Replay cache mode or options; default `read-write`, `read-only` in CI. */
   cache?: CacheMode | CacheConfig;
+  /** Where `e2e run --codegen` writes the code it generates; see [codegen](#codegen). */
+  codegen?: CodegenConfig;
   /** Named accounts: a username and a password the model never sees. */
   credentials?: Readonly<Record<string, CredentialConfig>>;
   /** Named values the model must never see: API keys, tokens, anything sourced from the environment. */
@@ -1685,6 +1722,16 @@ export interface Secret {
   /** Where the value may be filled. */
   readonly purpose: SecretPurpose;
   readonly [secretBrand]: true;
+}
+```
+
+### `CodegenConfig`
+
+```ts
+/** Where `e2e run --codegen` writes the code it generates. */
+export interface CodegenConfig {
+  /** The directory the generated test files go to, resolved against the project root; default `e2e-gen`. */
+  outDir?: string;
 }
 ```
 

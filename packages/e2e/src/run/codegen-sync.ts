@@ -28,6 +28,7 @@ import type { CodegenFailure, CodegenFile, CodegenRendered, CodegenStep, Codegen
 import type { ReportCodegen, ReportCodegenFailure, ReportCodegenGap } from '../report/build.ts';
 import { writeJsonReport, writeTextReport } from '../report/write.ts';
 import type { CodegenAttempt, CodegenScreenshot } from './codegen.ts';
+import { isPlainObject } from '../internal/options.ts';
 import { outputLayout } from './output.ts';
 import type { ResultRecord } from './records.ts';
 
@@ -205,8 +206,13 @@ export interface CodegenOutput {
   readonly gaps: readonly CodegenGapRecord[];
   /** Every test whose code stops where it failed, written in this run or kept from an earlier one. */
   readonly failures: readonly CodegenFailureRecord[];
-  /** Generated files that were edited by hand and written over, project-root relative. */
-  readonly overwritten: readonly string[];
+  /**
+   * Files written over that this run's code did not come from, project-root
+   * relative: `edited` since e2e last wrote them, or `unrecorded`, with no
+   * record of e2e writing them (one a person put there, or one written by a
+   * version whose record this one cannot read).
+   */
+  readonly overwritten: readonly { readonly file: string; readonly why: 'edited' | 'unrecorded' }[];
 }
 
 /** One test's result in this run, before its screenshots are placed. */
@@ -282,7 +288,8 @@ export class CodegenSync {
     const unsupported = new Map<string, string>();
     const outcomes = new Map<string, { file: string; target: string; tests: Map<string, CodegenOutcome> }>();
     const failedRuns = new Set<string>();
-    const artifactsRoot = outputLayout(config.output).artifacts;
+    // The report names an artifact by its path under `results/`.
+    const artifactsRoot = outputLayout(config.output).results;
     const now = new Date().toISOString();
     for (const { result, outcome, recordings } of this.pending) {
       const target = result.target.name;
@@ -326,7 +333,7 @@ export class CodegenSync {
 
     const written: string[] = [];
     const deleted: string[] = [];
-    const overwritten: string[] = [];
+    const overwritten: { file: string; why: 'edited' | 'unrecorded' }[] = [];
     const gaps: CodegenGapRecord[] = [];
     const failures: CodegenFailureRecord[] = [];
     for (const action of planCodegenSync({ records, outcomes, collection, sources })) {
@@ -365,7 +372,7 @@ export class CodegenSync {
       const rendered: CodegenRendered = codegen.render(file);
       const existing = await readFile(output, 'utf8').catch(() => undefined);
       if (existing !== undefined && existing !== rendered.code && (action.previous === undefined || digest(existing) !== action.previous.codeDigest)) {
-        overwritten.push(relativeTo(config.projectRoot, output));
+        overwritten.push({ file: relativeTo(config.projectRoot, output), why: action.previous === undefined ? 'unrecorded' : 'edited' });
       }
       if (existing !== rendered.code) await writeTextReport(output, rendered.code);
       written.push(output);
@@ -557,12 +564,37 @@ async function pruneEmpty(dir: string, stop: string): Promise<void> {
  */
 export function readStoredTest(recordsDir: string, file: string, target: string, testId: string): StoredCodegenTest | undefined {
   try {
-    const value = JSON.parse(readFileSync(recordPath(recordsDir, file, target), 'utf8')) as Partial<CodegenRecord>;
-    if (value.version !== CODEGEN_RECORD_VERSION || !Array.isArray(value.tests)) return undefined;
-    return value.tests.find((stored) => stored.id === testId);
+    const value: unknown = JSON.parse(readFileSync(recordPath(recordsDir, file, target), 'utf8'));
+    return isCodegenRecord(value) ? value.tests.find((stored) => stored.id === testId) : undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Whether a parsed file is a record this version writes: its version, the
+ * fields that name its files, and every test an id with a title and steps.
+ * The runner wrote it, so the steps inside are taken as it wrote them.
+ */
+function isCodegenRecord(value: unknown): value is CodegenRecord {
+  if (!isPlainObject(value) || value['version'] !== CODEGEN_RECORD_VERSION) return false;
+  const strings = ['file', 'target', 'sourceDigest', 'code', 'codeDigest'].every((key) => typeof value[key] === 'string');
+  const tests = value['tests'];
+  return (
+    strings &&
+    Array.isArray(value['gaps']) &&
+    Array.isArray(value['failures']) &&
+    Array.isArray(tests) &&
+    tests.every(
+      (stored: unknown) =>
+        isPlainObject(stored) &&
+        typeof stored['id'] === 'string' &&
+        typeof stored['sourceDigest'] === 'string' &&
+        isPlainObject(stored['test']) &&
+        typeof stored['test']['title'] === 'string' &&
+        Array.isArray(stored['test']['steps']),
+    )
+  );
 }
 
 /** Every record under `<output>/codegen`, read as absent when unreadable or of another version; other files there are left alone. */
@@ -574,17 +606,8 @@ async function readRecords(recordsDir: string): Promise<CodegenRecord[]> {
     const text = await readFile(path.join(entry.parentPath, entry.name), 'utf8').catch(() => undefined);
     if (text === undefined) continue;
     try {
-      const value = JSON.parse(text) as Partial<CodegenRecord>;
-      if (
-        value.version === CODEGEN_RECORD_VERSION &&
-        typeof value.file === 'string' &&
-        typeof value.target === 'string' &&
-        typeof value.code === 'string' &&
-        Array.isArray(value.tests) &&
-        Array.isArray(value.gaps)
-      ) {
-        records.push(value as CodegenRecord);
-      }
+      const value: unknown = JSON.parse(text);
+      if (isCodegenRecord(value)) records.push(value);
     } catch {
       // Not a record: left alone, read as absent.
     }

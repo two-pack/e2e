@@ -16,12 +16,12 @@
 
 import { containerKey, describeTarget, type RecordableAction } from '../agent/actions.ts';
 import { TraceRecorder } from '../cache/recorder.ts';
-import { bound, MAX_TRACE_DESCRIPTOR_CHARS, type DerivedReason, type RecordedAction } from '../cache/trace.ts';
+import { MAX_TRACE_DESCRIPTOR_CHARS, type DerivedReason, type RecordedAction } from '../cache/trace.ts';
 import type { AgentObservation, RedactedNode } from '../agent/observation.ts';
 import { relocateDescriptor } from '../cache/relocate.ts';
 import { carriesSecretMarker } from '../internal/redact.ts';
 import { isEditable } from '../internal/roles.ts';
-import { collapseText } from '../internal/text.ts';
+import { bound, collapseText } from '../internal/text.ts';
 import type {
   CodegenJudgment,
   CodegenRecording,
@@ -68,19 +68,29 @@ export interface CodegenStepRecorder {
 /** The longest `shownText` kept, as a descriptor field is (`MAX_TRACE_DESCRIPTOR_CHARS`). */
 const MAX_SHOWN_TEXT_CHARS = MAX_TRACE_DESCRIPTOR_CHARS;
 
+/** Each node's displayed text, computed once: a screen asks for every node's. */
+const displayedTexts = new WeakMap<RedactedNode, string>();
+
 /**
- * The text a node and its descendants show, their `text` joined in document
- * order and whitespace collapsed: what a script reading the page sees, which
- * leaves out the names an author gave (a button's `aria-label`).
+ * The text a node and its descendants show, whitespace collapsed: what a
+ * script reading the page sees, which leaves out the names an author gave (a
+ * button's `aria-label`). A node's own text already reads the descendants in
+ * its line (`Second Remove` for a row whose Remove button sits in the line),
+ * so a child whose text that already holds adds nothing; a child laid out on
+ * its own line adds its text after it.
  */
 export function displayedTextOf(node: RedactedNode): string {
-  const parts: string[] = [];
-  const collect = (current: RedactedNode): void => {
-    if (current.text !== undefined && current.text.trim() !== '') parts.push(current.text);
-    for (const child of current.children ?? []) collect(child);
-  };
-  collect(node);
-  return collapseText(parts.join(' '));
+  const cached = displayedTexts.get(node);
+  if (cached !== undefined) return cached;
+  const own = node.text === undefined ? '' : collapseText(node.text);
+  const parts = own === '' ? [] : [own];
+  for (const child of node.children ?? []) {
+    const shown = displayedTextOf(child);
+    if (shown !== '' && !own.includes(shown)) parts.push(shown);
+  }
+  const text = collapseText(parts.join(' '));
+  displayedTexts.set(node, text);
+  return text;
 }
 
 /**

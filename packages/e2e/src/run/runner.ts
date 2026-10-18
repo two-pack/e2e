@@ -644,8 +644,9 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       for (const { target, engine } of output.unsupported) {
         notice(target, `--codegen wrote no code for target "${target}": engine "${engine}" declares no codegen`);
       }
-      for (const file of output.overwritten) {
-        emit({ type: 'notice', target: 'run', message: `--codegen wrote ${file} over edits made to it since e2e last wrote it`, level: 'warning' });
+      for (const { file, why } of output.overwritten) {
+        const over = why === 'edited' ? 'edits made to it since e2e last wrote it' : 'a file e2e has no record of writing';
+        emit({ type: 'notice', target: 'run', message: `--codegen wrote ${file} over ${over}`, level: 'warning' });
       }
       for (const message of [...codegenFailureWarnings(output.failures), ...codegenGapWarnings(output.gaps)]) {
         emit({ type: 'notice', target: 'run', message, level: 'warning' });
