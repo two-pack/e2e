@@ -24,8 +24,10 @@ bunx e2e run --codegen tests/checkout.e2e.ts
 </CodeGroup>
 
 The run writes one file per test file and target under
-`.e2e/codegen/<target>/`, at the test file's own path with `.spec.ts` in place
-of `.e2e.ts`, and prints where:
+`.e2e/codegen/<target>/`, at the test file's own path with `.gen.spec.ts` in place
+of `.e2e.ts`, and prints where. `.gen` marks the file as one e2e wrote, so it
+stays told apart from hand-written specs once copied among them; `.spec` is
+what Playwright Test picks up with its default `testMatch`.
 
 ```text
      Report  .e2e/report.json
@@ -59,7 +61,7 @@ test('signs in and buys a hat', async ({ app, agent, screen }) => {
 
 the web engine writes:
 
-```ts title=".e2e/codegen/web/tests/checkout.spec.ts"
+```ts title=".e2e/codegen/web/tests/checkout.gen.spec.ts"
 import { expect, test } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 import { z } from 'zod';
@@ -172,6 +174,7 @@ code then says so above the checks:
 //   The judge's explanation of its verdict (its reasoning, not a checked fact): The Login button is shown and no list is on screen.
 //   Not checked: the task list is not
 //   Dropped absent "Logout": the instruction does not say this text is missing
+//   Screenshot of the screen it passed on: ./first.gen.spec.ts.gaps/1-5.png
 await expect(page.getByRole("button", { name: "Login", exact: true })).toBeVisible();
 ```
 
@@ -182,15 +185,23 @@ rest of the file; a dropped check whose text would carry a secret is listed
 without its content. A judgment no check could be kept for throws in place of
 the call, with the same comments above the `throw`.
 
+The screenshot is of the screen the judgment passed on, put beside the file in
+`<file>.gaps/`, named by the test's and the step's place in the file. An
+`agent.assert` reuses the screenshot it keeps as evidence; an `agent.waitFor`,
+an `agent.extract`, and a custom executor's assertion take one only when their
+checks leave a gap. It is masked like every screenshot the run keeps, and none
+is taken once a secret was filled in the attempt, nor for an `agent.assert`
+called with `screenshot: false`; the comment then says why.
+
 The run ends with a warning that points at each such judgment:
 
 ```text
-⚠ --codegen: 1 judgment was only partly converted (.e2e/codegen/web/tests/first.spec.ts:27)
+⚠ --codegen: 1 judgment was only partly converted (.e2e/codegen/web/tests/first.gen.spec.ts:27); screenshots in .e2e/codegen/web/tests/first.gen.spec.ts.gaps
 ```
 
 and `report.json` lists them under `run.codegen.gaps`, each with the file and
-line, `partial` or `unconverted`, the test, the instruction, and the parts left
-unchecked, so CI can fail on them.
+line, `partial` or `unconverted`, the test, the instruction, the parts left
+unchecked, and the screenshot or why there is none, so CI can fail on them.
 
 ### How a node is found
 

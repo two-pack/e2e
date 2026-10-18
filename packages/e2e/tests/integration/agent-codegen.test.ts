@@ -1,6 +1,6 @@
 /**
  * `e2e run --codegen`: the agent steps of passing tests are written out as the
- * target engine's own test code, `<output>/codegen/<target>/<file>.spec.ts`
+ * target engine's own test code, `<output>/codegen/<target>/<file>.gen.spec.ts`
  * for the web engine, on both transports. The actions are recorded whatever
  * the cache mode, so a step the cache replayed writes the same code as one the
  * model drove.
@@ -140,7 +140,7 @@ const COUNTER = 'page.getByRole("status", { name: "Counter", exact: true })';
 
 const HELPER = fileURLToPath(new URL('../helpers/fake-model.ts', import.meta.url));
 
-const SPEC = path.join('.e2e', 'codegen', 'web', 'tests', 'counter.spec.ts');
+const SPEC = path.join('.e2e', 'codegen', 'web', 'tests', 'counter.gen.spec.ts');
 
 describe('--codegen on the in-process transport', () => {
   let app: FixtureApp;
@@ -207,18 +207,21 @@ describe('--codegen on the in-process transport', () => {
     const code = readFileSync(path.join(project.dir, SPEC), 'utf8');
     const lines = code.split('\n');
     const header = lines.findIndex((line) => line.trim() === '// agent.assert: the Increment button is gone and nothing is broken');
-    expect(lines.slice(header, header + 6).map((line) => line.trim())).toEqual([
+    expect(lines.slice(header, header + 7).map((line) => line.trim())).toEqual([
       '// agent.assert: the Increment button is gone and nothing is broken',
       '// NOTE: the checks below prove only part of this judgment.',
       "//   The judge's explanation of its verdict (its reasoning, not a checked fact): judged",
       '//   Not checked: nothing is broken',
       '//   Dropped absent "Error": the instruction does not say this text is missing',
+      // The custom executor took no screenshot of its own; the gap took one of the screen it passed on.
+      '//   Screenshot of the screen it passed on: ./counter.gen.spec.ts.gaps/2-4.png',
       'await expect(page.getByRole("button", { name: "Increment", exact: true })).toHaveCount(0);',
     ]);
+    expect(existsSync(path.join(project.dir, path.dirname(SPEC), 'counter.gen.spec.ts.gaps', '2-4.png'))).toBe(true);
     // A field is an element too, found by its label whatever was typed into it.
-    expect(lines[header + 6]?.trim()).toBe('await expect(page.getByRole("textbox", { name: "Email", exact: true })).toHaveCount(0);');
-    expect(lines[header + 7]?.trim()).toBe('await expect(page.getByText("Increment")).toHaveCount(0);');
-    expect(lines[header + 8]?.trim()).toBe('await expect(page).toHaveURL("/about");');
+    expect(lines[header + 7]?.trim()).toBe('await expect(page.getByRole("textbox", { name: "Email", exact: true })).toHaveCount(0);');
+    expect(lines[header + 8]?.trim()).toBe('await expect(page.getByText("Increment")).toHaveCount(0);');
+    expect(lines[header + 9]?.trim()).toBe('await expect(page).toHaveURL("/about");');
     // The first judgment's checks prove all of it: no note.
     expect(code).toContain('  // agent.assert: the counter is on screen\n  await expect');
     const gap = {
@@ -230,6 +233,7 @@ describe('--codegen on the in-process transport', () => {
       api: 'agent.assert',
       instruction: 'the Increment button is gone and nothing is broken',
       uncovered: ['nothing is broken'],
+      screenshot: `${SPEC.split(path.sep).join('/')}.gaps/2-4.png`,
     };
     const replacedHeader = lines.findIndex((line) => line.trim() === '// agent.assert: the Increment button was replaced, and nothing is broken');
     const replaced = {
@@ -237,10 +241,11 @@ describe('--codegen on the in-process transport', () => {
       line: replacedHeader + 1,
       test: 'remembers what a screen step went through',
       instruction: 'the Increment button was replaced, and nothing is broken',
+      screenshot: `${SPEC.split(path.sep).join('/')}.gaps/3-3.png`,
     };
     expect(outcome.report.run.codegen).toEqual({ dir: '.e2e/codegen', files: [SPEC.split(path.sep).join('/')], gaps: [gap, replaced] });
     expect(warnings).toEqual([
-      `--codegen: 2 judgments were only partly converted (${gap.file}:${String(gap.line)}, ${replaced.file}:${String(replaced.line)})`,
+      `--codegen: 2 judgments were only partly converted (${gap.file}:${String(gap.line)}, ${replaced.file}:${String(replaced.line)}); screenshots in ${gap.file}.gaps`,
     ]);
   });
 
@@ -253,6 +258,7 @@ describe('--codegen on the in-process transport', () => {
         '  // NOTE: the checks below prove only part of this judgment.',
         "  //   The judge's explanation of its verdict (its reasoning, not a checked fact): judged",
         '  //   Not checked: nothing is broken',
+        '  //   Screenshot of the screen it passed on: ./counter.gen.spec.ts.gaps/3-3.png',
         '  await expect(page.getByRole("button", { name: "Increment", exact: true })).toHaveCount(0);',
       ].join('\n'),
     );
@@ -344,7 +350,7 @@ export default {
 
   it('collects every worker’s recordings and writes each file under its own path', () => {
     expect(outcome.exitCode).toBe(1);
-    const nested = path.join(project.dir, '.e2e', 'codegen', 'web', 'tests', 'nested', 'again.spec.ts');
+    const nested = path.join(project.dir, '.e2e', 'codegen', 'web', 'tests', 'nested', 'again.gen.spec.ts');
     expect(outcome.codegenFiles?.toSorted()).toEqual([path.join(project.dir, SPEC), nested].toSorted());
     expect(existsSync(nested)).toBe(true);
     const code = readFileSync(nested, 'utf8');

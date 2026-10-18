@@ -42,8 +42,8 @@ function render(file: CodegenFile, testIdAttribute?: string): string {
 }
 
 describe('playwright codegen statements', () => {
-  it('writes .spec.ts files', () => {
-    expect(playwrightCodegen(undefined).extension).toBe('.spec.ts');
+  it('writes .gen.spec.ts files, which Playwright Test picks up by default', () => {
+    expect(playwrightCodegen(undefined).extension).toBe('.gen.spec.ts');
   });
 
   it('maps every node verb onto the Playwright call that does the same', () => {
@@ -257,6 +257,7 @@ describe('playwright codegen statements', () => {
       explanation: 'The login form shows and no list is on screen.\nNo task is listed.',
       uncovered: ['タスクの一覧は表示されていない'],
       dropped: [{ check: 'absent "Logout"', reason: 'the instruction does not say this text is missing' }, { reason: 'its text carries a secret' }],
+      screenshot: 'checkout.gen.spec.ts.gaps/1-1.png',
     };
     const file: CodegenFile = {
       ...judgedFile('agent.assert', [{ kind: 'visible', target: { role: 'button', name: 'Login' } }]),
@@ -271,6 +272,7 @@ describe('playwright codegen statements', () => {
         '  //   Not checked: タスクの一覧は表示されていない',
         '  //   Dropped absent "Logout": the instruction does not say this text is missing',
         '  //   Dropped a check whose content is withheld: its text carries a secret',
+        '  //   Screenshot of the screen it passed on: ./checkout.gen.spec.ts.gaps/1-1.png',
         '  await expect(page.getByRole("button", { name: "Login", exact: true })).toBeVisible();',
       ].join('\n'),
     );
@@ -279,9 +281,12 @@ describe('playwright codegen statements', () => {
     expect(rendered.gaps).toEqual([{ test: 0, step: 0, line: lines.indexOf('  // agent.assert: the order is confirmed') + 1 }]);
     expect(playwrightCodegen(undefined).render(file).gaps).toEqual([]);
 
-    const unconverted: CodegenFile = { ...file, tests: [{ ...file.tests[0]!, steps: [{ ...file.tests[0]!.steps[0]!, judgment: { checks: [], gap } }] }] };
+    const { screenshot: _screenshot, ...noScreenshot } = gap;
+    const withheld = { ...noScreenshot, screenshotWithheld: 'a secret was filled earlier in this attempt, so no screenshot leaves it' };
+    const unconverted: CodegenFile = { ...file, tests: [{ ...file.tests[0]!, steps: [{ ...file.tests[0]!.steps[0]!, judgment: { checks: [], gap: withheld } }] }] };
     const thrown = playwrightCodegen(undefined).render(unconverted);
     expect(thrown.code).toContain('// TODO: no deterministic check could be derived from the screen this judgment passed on.\n  //   The judge');
+    expect(thrown.code).toContain('  //   No screenshot: a secret was filled earlier in this attempt, so no screenshot leaves it');
     expect(thrown.gaps).toHaveLength(1);
   });
 

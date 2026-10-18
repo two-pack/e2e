@@ -636,17 +636,18 @@
     },
     "codegen": {
       "dir": ".e2e/codegen",
-      "files": [".e2e/codegen/web/tests/example.spec.ts"],
+      "files": [".e2e/codegen/web/tests/example.gen.spec.ts"],
       "gaps": [
         {
-          "file": ".e2e/codegen/web/tests/example.spec.ts",
+          "file": ".e2e/codegen/web/tests/example.gen.spec.ts",
           "line": 27,
           "kind": "partial",
           "source": "tests/example.e2e.ts",
           "test": "signs out",
           "api": "agent.assert",
           "instruction": "the sign-in form is shown and the task list is not",
-          "uncovered": ["the task list is not"]
+          "uncovered": ["the task list is not"],
+          "screenshot": ".e2e/codegen/web/tests/example.gen.spec.ts.gaps/1-4.png"
         }
       ]
     }

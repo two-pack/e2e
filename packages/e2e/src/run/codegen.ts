@@ -15,7 +15,7 @@
  * gets back; it writes it under `<output>/codegen/<target>/`.
  */
 
-import { readFile, rm } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { containerKey, describeTarget, type RecordableAction } from '../agent/actions.ts';
 import { TraceRecorder } from '../cache/recorder.ts';
@@ -43,10 +43,15 @@ import { sanitizePathSegment } from './artifacts.ts';
 import { outputLayout } from './output.ts';
 import type { ResultRecord } from './records.ts';
 
+/** Where the screen a judgment passed on was saved in the worker, as an absolute file, or why it was not. */
+export type CodegenScreenshot = { readonly file: string } | { readonly withheld: string };
+
 /** What one step left for code: an act's actions, or a judgment's checks. */
 export interface CodegenStepData {
   readonly recording?: CodegenRecording;
   readonly judgment?: CodegenJudgment;
+  /** For a judgment with a gap: where the screen it passed on was saved in the worker, or why it was not. */
+  readonly screenshot?: CodegenScreenshot;
 }
 
 /** One attempt's recordings, keyed by the step id the report gives the step. */
@@ -281,7 +286,7 @@ export class CodegenLog {
     string,
     { readonly recorder: TraceRecorder; startLocation: string | undefined; readonly extras: Map<number, ActionExtras> }
   >();
-  private readonly judgments = new Map<string, CodegenJudgment>();
+  private readonly judgments = new Map<string, { readonly judgment: CodegenJudgment; readonly screenshot: CodegenScreenshot | undefined }>();
   /** What the attempt's screens showed, oldest first. */
   readonly seen = new SeenScreens();
 
@@ -329,8 +334,8 @@ export class CodegenLog {
   }
 
   /** Keeps what a passing judgment step left for code: the checks that prove it, and an extraction's value. */
-  judged(stepId: string, judgment: CodegenJudgment): void {
-    this.judgments.set(stepId, judgment);
+  judged(stepId: string, judgment: CodegenJudgment, screenshot?: CodegenScreenshot): void {
+    this.judgments.set(stepId, { judgment, screenshot });
   }
 
   /** The act steps that committed at least one action and the judgments that passed, by step id. */
@@ -346,7 +351,9 @@ export class CodegenLog {
         },
       };
     }
-    for (const [stepId, judgment] of this.judgments) steps[stepId] = { ...steps[stepId], judgment };
+    for (const [stepId, { judgment, screenshot }] of this.judgments) {
+      steps[stepId] = { ...steps[stepId], judgment, ...(screenshot === undefined ? {} : { screenshot }) };
+    }
     return { attemptId: this.attemptId, steps };
   }
 }
@@ -393,12 +400,17 @@ export interface CodegenGapRecord {
   readonly instruction: string;
   /** The parts of the instruction the code does not check, as the judge named them. */
   readonly uncovered: readonly string[];
+  /** The screenshot of the screen the judgment passed on, beside the written file, project-root relative. */
+  readonly screenshot?: string;
+  /** Why there is no screenshot. */
+  readonly screenshotWithheld?: string;
 }
 
-/** One test on its way to a file: its target, file, and steps. */
+/** One test on its way to a file: its target, file, and steps, and the screenshots of its judgments with a gap by step index. */
 interface CollectedTest {
   readonly result: ResultRecord;
   readonly test: CodegenTest;
+  readonly screenshots: ReadonlyMap<number, CodegenScreenshot>;
 }
 
 /** Collects passing results and their recordings in the runner, then writes the engines' code. */
@@ -415,8 +427,10 @@ export class CodegenCollector {
     const attempt = result.attempts.at(-1);
     if (attempt === undefined || attempt.status !== 'passed') return;
     const recorded = recordings?.attemptId === attempt.id ? recordings.steps : {};
-    const steps = attempt.steps.map((step): CodegenStep => {
+    const screenshots = new Map<number, CodegenScreenshot>();
+    const steps = attempt.steps.map((step, index): CodegenStep => {
       const data = recorded[step.id];
+      if (data?.screenshot !== undefined) screenshots.set(index, data.screenshot);
       return {
         api: step.api,
         label: step.label,
@@ -425,7 +439,7 @@ export class CodegenCollector {
         ...(data?.judgment === undefined ? {} : { judgment: data.judgment }),
       };
     });
-    this.tests.push({ result, test: { title: result.test.title, titlePath: [...result.test.titlePath], steps } });
+    this.tests.push({ result, test: { title: result.test.title, titlePath: [...result.test.titlePath], steps }, screenshots });
   }
 
   /**
@@ -466,15 +480,17 @@ export class CodegenCollector {
         ...(target.app.base === undefined ? {} : { appUrl: target.app.base.href }),
         ...(source === undefined ? {} : { source }),
         ...(Object.keys(usernames).length === 0 ? {} : { usernames }),
-        tests: uniqueTests(ordered),
+        tests: [],
       };
+      const unique = uniqueTests(ordered);
       const output = path.join(dir, sanitizePathSegment(target.name), ...outputSegments(file.file, codegen.extension));
-      const rendered = codegen.render(file);
+      const tests = await withScreenshots(unique, output);
+      const rendered = codegen.render({ ...file, tests });
       await writeTextReport(output, rendered.code);
       files.push(output);
       const written = path.relative(config.projectRoot, output).split(path.sep).join('/');
       for (const site of rendered.gaps) {
-        const test = file.tests[site.test];
+        const test = tests[site.test];
         const step = test?.steps[site.step];
         const gap = step?.judgment?.gap;
         if (test === undefined || step === undefined || gap === undefined) continue;
@@ -487,6 +503,10 @@ export class CodegenCollector {
           api: step.api,
           instruction: step.label,
           uncovered: gap.uncovered,
+          ...(gap.screenshot === undefined
+            ? {}
+            : { screenshot: path.relative(config.projectRoot, path.join(path.dirname(output), gap.screenshot)).split(path.sep).join('/') }),
+          ...(gap.screenshotWithheld === undefined ? {} : { screenshotWithheld: gap.screenshotWithheld }),
         });
       }
     }
@@ -514,7 +534,10 @@ export function codegenGapWarnings(gaps: readonly CodegenGapRecord[]): string[] 
     if (matching.length === 0) return [];
     const locations = matching.slice(0, MAX_WARNED_LOCATIONS).map((gap) => `${gap.file}:${String(gap.line)}`);
     const more = matching.length - locations.length;
-    return [`--codegen: ${says(matching.length)} (${locations.join(', ')}${more > 0 ? `, and ${String(more)} more` : ''})`];
+    // The screenshots sit in one folder per file; naming each would make the line unreadable.
+    const folders = [...new Set(matching.flatMap((gap) => (gap.screenshot === undefined ? [] : [path.posix.dirname(gap.screenshot)])))];
+    const shots = folders.length === 0 ? '' : `; screenshots in ${folders.join(', ')}`;
+    return [`--codegen: ${says(matching.length)} (${locations.join(', ')}${more > 0 ? `, and ${String(more)} more` : ''})${shots}`];
   };
   const judgments = (count: number): string => `${String(count)} ${count === 1 ? 'judgment was' : 'judgments were'}`;
   return [
@@ -527,16 +550,49 @@ export function codegenGapWarnings(gaps: readonly CodegenGapRecord[]): string[] 
  * One entry per test: a test run as several agents or repeats passed more
  * than once, and its first passing run stands for the rest.
  */
-function uniqueTests(ordered: readonly CollectedTest[]): CodegenTest[] {
+function uniqueTests(ordered: readonly CollectedTest[]): CollectedTest[] {
   const seen = new Set<string>();
-  const tests: CodegenTest[] = [];
-  for (const { result, test } of ordered) {
-    if (seen.has(result.test.id)) continue;
-    seen.add(result.test.id);
-    tests.push(test);
+  const tests: CollectedTest[] = [];
+  for (const collected of ordered) {
+    if (seen.has(collected.result.test.id)) continue;
+    seen.add(collected.result.test.id);
+    tests.push(collected);
   }
   return tests;
 }
+
+/**
+ * The tests with each judgment's screenshot put beside the file the code is
+ * written to, `<file>.gaps/<test>-<step>.png`, and named on its gap by its
+ * path from the file; a screenshot that could not be copied, or never was
+ * taken, says why instead.
+ */
+async function withScreenshots(collected: readonly CollectedTest[], output: string): Promise<CodegenTest[]> {
+  return Promise.all(
+    collected.map(async ({ test, screenshots }, testIndex) => ({
+      ...test,
+      steps: await Promise.all(
+        test.steps.map(async (step, stepIndex): Promise<CodegenStep> => {
+          const gap = step.judgment?.gap;
+          const screenshot = screenshots.get(stepIndex);
+          if (step.judgment === undefined || gap === undefined || screenshot === undefined) return step;
+          if ('withheld' in screenshot) return { ...step, judgment: { ...step.judgment, gap: { ...gap, screenshotWithheld: screenshot.withheld } } };
+          const name = `${path.basename(output)}.gaps/${String(testIndex + 1)}-${String(stepIndex + 1)}${path.extname(screenshot.file) || '.png'}`;
+          try {
+            await mkdir(path.join(path.dirname(output), path.dirname(name)), { recursive: true });
+            await copyFile(screenshot.file, path.join(path.dirname(output), name));
+          } catch {
+            return { ...step, judgment: { ...step.judgment, gap: { ...gap, screenshotWithheld: SCREENSHOT_NOT_COPIED } } };
+          }
+          return { ...step, judgment: { ...step.judgment, gap: { ...gap, screenshot: name } } };
+        }),
+      ),
+    })),
+  );
+}
+
+/** Why a gap names no screenshot when the one the step took could not be put beside the file. */
+const SCREENSHOT_NOT_COPIED = 'the screenshot the step took could not be copied beside this file';
 
 /** The suffixes a test file name carries that the written file replaces with the engine's extension. */
 const TEST_FILE_SUFFIX = /(?:\.e2e)?\.[cm]?[jt]sx?$/u;

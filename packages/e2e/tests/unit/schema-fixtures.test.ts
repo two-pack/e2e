@@ -163,11 +163,12 @@ describe.each(schemas)('%s schema', (name) => {
       const report = readJson('fixtures', 'report-v1.valid.json') as { run: { codegen?: { gaps: Record<string, unknown>[] } & Record<string, unknown> } };
       const codegen = report.run.codegen!;
       const gap = codegen.gaps[0]!;
-      for (const bad of [{ kind: 'half' }, { line: 0 }, { uncovered: undefined }, { extra: true }]) {
+      for (const bad of [{ kind: 'half' }, { line: 0 }, { uncovered: undefined }, { extra: true }, { screenshot: '' }, { screenshotWithheld: 3 }]) {
         report.run.codegen = { ...codegen, gaps: [{ ...gap, ...bad }] };
         expect(validate(report), JSON.stringify(bad)).toBe(false);
       }
-      report.run.codegen = { ...codegen, gaps: [{ ...gap, kind: 'unconverted', uncovered: [] }] };
+      const { screenshot: _screenshot, ...withoutScreenshot } = gap;
+      report.run.codegen = { ...codegen, gaps: [{ ...withoutScreenshot, kind: 'unconverted', uncovered: [], screenshotWithheld: 'the engine took no screenshot' }] };
       expect(validate(report)).toBe(true);
       delete report.run.codegen;
       expect(validate(report)).toBe(true);

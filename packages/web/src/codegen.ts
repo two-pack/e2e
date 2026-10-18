@@ -21,7 +21,8 @@ const DEFAULT_JUDGMENT_TIMEOUT = '30_000';
 export function playwrightCodegen(testIdAttribute: string | undefined): EngineCodegen {
   const attribute = testIdAttribute ?? PLAYWRIGHT_TEST_ID_ATTRIBUTE;
   return {
-    extension: '.spec.ts',
+    // `.gen` marks the file as written by e2e; `.spec` is the name Playwright Test picks up by default.
+    extension: '.gen.spec.ts',
     render: (file) => convertSource(file, attribute) ?? renderSteps(file, attribute),
     locate: locateOnScreen,
   };

@@ -274,8 +274,9 @@ export class StatementWriter {
 /**
  * The comment lines that say what a judgment's checks leave unproven, for
  * above them: the judge's explanation, marked as its reasoning rather than a
- * fact the code checks, the parts of the instruction left unchecked, and the
- * checks dropped with why, which a reader who agrees can add as an `expect`.
+ * fact the code checks, the parts of the instruction left unchecked, the
+ * checks dropped with why, which a reader who agrees can add as an `expect`,
+ * and where the screenshot of the screen it passed on is, or why there is none.
  * `converted` is false for a judgment with no checks, which throws instead.
  */
 export function gapComments(gap: CodegenJudgmentGap, converted: boolean): string[] {
@@ -286,6 +287,11 @@ export function gapComments(gap: CodegenJudgmentGap, converted: boolean): string
     ...(gap.explanation === undefined ? [] : [`//   The judge's explanation of its verdict (its reasoning, not a checked fact): ${commentText(gap.explanation)}`]),
     ...gap.uncovered.map((part) => `//   Not checked: ${commentText(part)}`),
     ...gap.dropped.map(({ check, reason }) => `//   Dropped ${check === undefined ? 'a check whose content is withheld' : commentText(check)}: ${commentText(reason)}`),
+    ...(gap.screenshot !== undefined
+      ? [`//   Screenshot of the screen it passed on: ./${commentText(gap.screenshot)}`]
+      : gap.screenshotWithheld === undefined
+        ? []
+        : [`//   No screenshot: ${commentText(gap.screenshotWithheld)}`]),
   ];
 }
 

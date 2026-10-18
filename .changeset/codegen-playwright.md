@@ -4,7 +4,7 @@
 ---
 
 Add `e2e run --codegen`. It writes each test file as the target engine's own
-test code under `<output>/codegen/<target>/`, runnable with no model. The
+test code under `<output>/codegen/<target>/` (`<file>.gen.spec.ts` on the web engine), runnable with no model. The
 runner records every action an `agent.act` step commits, whether the model or
 the replay cache chose it, and for each passing `agent.assert`,
 `agent.waitFor`, and `agent.extract` asks the judge once more for the
@@ -34,3 +34,7 @@ A check is kept only when the locator written for it finds its node alone:
 the engine's new optional `codegen.locate` says which nodes of a screen a
 locator finds, so a title reading "Login" beside a button reading the same
 is dropped, not written as a `getByText` that matches both.
+
+A judgment with a gap also gets a screenshot of the screen it passed on,
+beside the file in `<file>.gaps/`, named in its comment, the warning, and the
+report; none once a secret was filled, and the comment says why.

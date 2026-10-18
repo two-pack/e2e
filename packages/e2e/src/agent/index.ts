@@ -9,7 +9,7 @@
  * of a planned flow (`agent.act`), and one cache design serves the latter.
  */
 
-import { recordCodegenJudgment } from './codegen-checks.ts';
+import { evidenceScreenshot, recordCodegenJudgment } from './codegen-checks.ts';
 import { resolveVision } from '../config/agent.ts';
 import { TestError, withHint } from '../internal/errors.ts';
 import { rejectUnknownOptions } from '../internal/options.ts';
@@ -297,6 +297,7 @@ export function createAgentFixture(runtime: AgentContext): Agent {
               instruction: assertion,
               observation,
               explanation: judgment.explanation,
+              screenshot: evidenceScreenshot(runtime, options?.screenshot, screenshot),
               timeoutMs: config.judgmentTimeout,
             });
             return;

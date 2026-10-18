@@ -107,6 +107,14 @@ export interface CodegenJudgmentGap {
   readonly uncovered: readonly string[];
   /** The checks the judge proposed that the runner did not keep, and why. */
   readonly dropped: readonly CodegenDroppedCheck[];
+  /**
+   * A screenshot of the screen the judgment passed on, redacted like every
+   * screenshot the run keeps, by its path relative to the written file;
+   * the runner puts it beside the file before `render` is called.
+   */
+  readonly screenshot?: string;
+  /** Why there is no `screenshot`, in a phrase: `a secret was filled earlier in this attempt, …`. */
+  readonly screenshotWithheld?: string;
 }
 
 /** One proposed check the runner did not keep. */

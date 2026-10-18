@@ -20,13 +20,14 @@
  * the step without checks.
  */
 
+import path from 'node:path';
 import { describeTarget, containerKey } from './actions.ts';
 import { Invocation, type AgentContext } from './invocation.ts';
 import { prepareObservation, type AgentObservation, type RedactedNode } from './observation.ts';
 import { isRelocatableDescriptor, describePosition } from '../cache/relocate.ts';
 import type { TraceTargetDescriptor } from '../cache/trace.ts';
 import type { CodegenCheck, CodegenDroppedCheck, CodegenJudgmentGap, CodegenTargetDescriptor } from '../engine/codegen.ts';
-import { codegenExtrasOf, displayedTextOf, type CodegenLog, type SeenScreens } from '../run/codegen.ts';
+import { codegenExtrasOf, displayedTextOf, type CodegenLog, type CodegenScreenshot, type SeenScreens } from '../run/codegen.ts';
 import { carriesSecretMarker } from '../internal/redact.ts';
 import { bound } from '../cache/trace.ts';
 import { collapseText } from '../internal/text.ts';
@@ -92,7 +93,43 @@ export interface CodegenChecksRequest {
   readonly value?: unknown;
   /** The judge's explanation of the verdict, when it gave one. */
   readonly explanation?: string | undefined;
+  /** The screenshot the step already took of the screen it judged, or why it took none; absent when it never tried. */
+  readonly screenshot?: CodegenScreenshot | undefined;
   readonly timeoutMs: number;
+}
+
+/** Why a judgment's screen has no screenshot, in a phrase for the code and the report. */
+const SCREENSHOT_WITHHELD = {
+  tainted: 'a secret was filled earlier in this attempt, so no screenshot leaves it',
+  declined: 'the call asked for no screenshot',
+  failed: 'the engine took no screenshot',
+} as const;
+
+/**
+ * Where an `agent.assert` step's own evidence screenshot is, for the
+ * judgment's gap: the file it saved, or why there is none.
+ */
+export function evidenceScreenshot(runtime: AgentContext, requested: boolean | undefined, relative: string | undefined): CodegenScreenshot {
+  if (requested === false) return { withheld: SCREENSHOT_WITHHELD.declined };
+  if (runtime.exposure.withholdsPixels) return { withheld: SCREENSHOT_WITHHELD.tainted };
+  return relative === undefined ? { withheld: SCREENSHOT_WITHHELD.failed } : { file: path.join(runtime.artifacts.dir, relative) };
+}
+
+/**
+ * Takes a screenshot of the screen a judgment with a gap passed on, for a
+ * step that took none of its own (`agent.waitFor`, `agent.extract`, a custom
+ * executor's assertion): redacted by the engine, attached to the step, and
+ * never once a secret was filled.
+ */
+async function screenshotForGap(runtime: AgentContext): Promise<CodegenScreenshot> {
+  if (runtime.exposure.withholdsPixels) return { withheld: SCREENSHOT_WITHHELD.tainted };
+  try {
+    const relative = await runtime.engine.session.artifacts.screenshot('judgment', runtime.engine.operation());
+    runtime.steps.attachArtifact(runtime.artifacts.register('screenshot', relative));
+    return { file: path.join(runtime.artifacts.dir, relative) };
+  } catch {
+    return { withheld: SCREENSHOT_WITHHELD.failed };
+  }
 }
 
 /**
@@ -115,11 +152,17 @@ export async function recordCodegenJudgment(runtime: AgentContext, request: Code
     checks.length > 0 && uncovered.length === 0
       ? undefined
       : { ...(explanation === undefined ? {} : { explanation }), uncovered, dropped: derived?.dropped ?? [] };
-  codegen.judged(stepId, {
-    checks,
-    ...(keepValue ? { value: request.value } : {}),
-    ...(gap === undefined ? {} : { gap }),
-  });
+  // The screen goes with the gap, for whoever reads the code to see what the checks left out.
+  const screenshot = gap === undefined ? undefined : (request.screenshot ?? (await screenshotForGap(runtime)));
+  codegen.judged(
+    stepId,
+    {
+      checks,
+      ...(keepValue ? { value: request.value } : {}),
+      ...(gap === undefined ? {} : { gap }),
+    },
+    screenshot,
+  );
 }
 
 /** What the question left: the kept checks, the parts of the instruction they leave unproven, and the checks dropped. */
@@ -304,9 +347,9 @@ function confirmCheck(check: ProposedCheck, context: CheckContext): Confirmation
     case 'url': {
       // The observation shows the model the path; the check keeps the whole
       // location, which the engine writes relative to the app where it can.
-      const { location, path } = observation;
+      const { location, path: shownPath } = observation;
       if (text === undefined || location === undefined) return { reason: 'the screen reports no location' };
-      return text === path || text === location ? { check: { kind: 'url', location } } : { reason: 'the location differs' };
+      return text === shownPath || text === location ? { check: { kind: 'url', location } } : { reason: 'the location differs' };
     }
     case 'absent':
       return confirmAbsent(text, context);

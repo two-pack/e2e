@@ -790,7 +790,7 @@
       }
     },
     "codegenGap": {
-      "description": "One judgment the generated code does not prove whole: partial when its checks prove only some of the instruction, unconverted when no check could be kept and the code throws in its place. uncovered holds the parts of the instruction the code does not check, as the judge named them.",
+      "description": "One judgment the generated code does not prove whole: partial when its checks prove only some of the instruction, unconverted when no check could be kept and the code throws in its place. uncovered holds the parts of the instruction the code does not check, as the judge named them; screenshot is the screen the judgment passed on, put beside the file, project-root relative, and screenshotWithheld why there is none.",
       "type": "object",
       "additionalProperties": false,
       "required": ["file", "line", "kind", "source", "test", "api", "instruction", "uncovered"],
@@ -802,7 +802,9 @@
         "test": { "type": "string" },
         "api": { "type": "string", "minLength": 1 },
         "instruction": { "type": "string" },
-        "uncovered": { "type": "array", "items": { "type": "string" } }
+        "uncovered": { "type": "array", "items": { "type": "string" } },
+        "screenshot": { "type": "string", "minLength": 1 },
+        "screenshotWithheld": { "type": "string", "minLength": 1 }
       }
     },
     "explore": {
