@@ -172,6 +172,13 @@ describe.each(schemas)('%s schema', (name) => {
       expect(validate(report)).toBe(true);
       report.run.codegen = { ...codegen, gaps: [{ ...gap, carried: true }] };
       expect(validate(report)).toBe(true);
+      const failure = (codegen['failures'] as Record<string, unknown>[])[0]!;
+      for (const bad of [{ code: undefined }, { line: 0 }, { carried: false }, { extra: true }]) {
+        report.run.codegen = { ...codegen, failures: [{ ...failure, ...bad }] };
+        expect(validate(report), JSON.stringify(bad)).toBe(false);
+      }
+      report.run.codegen = { ...codegen, failures: undefined };
+      expect(validate(report)).toBe(false);
       delete report.run.codegen;
       expect(validate(report)).toBe(true);
     });

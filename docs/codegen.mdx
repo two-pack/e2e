@@ -44,16 +44,16 @@ else.
 
 `--codegen` keeps the code in step with the tests the way the
 [replay cache](/cache) keeps its entries, but with exactly one generated file
-per e2e file. What each test last recorded when it passed is kept in
-`.e2e/codegen/` (it follows `--output`), with the run that recorded it, and a
-run updates it as follows:
+per e2e file. What each test last recorded is kept in `.e2e/codegen/` (it
+follows `--output`), with the run that recorded it, and a run updates it as
+follows:
 
 | In this run | The test's code |
 | --- | --- |
 | The test passed | Written again from what this run recorded. |
 | The test was not run (`--grep`, a file named on the command line, `--last-failed`, an interrupt) | Left as it was. |
 | The test failed only because no model answered (`MODEL_UNAVAILABLE`, `MODEL_PROVIDER_FAILED`) | Left as it was. |
-| The test failed otherwise | Dropped: each agent call of it throws until the test passes again. |
+| The test failed otherwise | Written again from the failed run, up to where it failed (see below). |
 | The e2e file no longer declares the test | Dropped from the file. |
 | The e2e file is gone | The generated file is deleted. |
 
@@ -61,6 +61,12 @@ A generated file none of whose tests ran, and whose e2e file did not change,
 is not written at all. Any other is written again whole, from the e2e file as
 it is now and what its tests last recorded. An agent call whose instruction
 changed since its test last passed throws until the test passes again.
+
+A judgment reuses the checks its test's last recorded run made, when every one
+of them still holds on the screen it passed on, and the judge is not asked
+again; the parts left unchecked and the judge's explanation come with them
+from that run. The code then stays the same while the page does. A check that
+no longer holds sends the judgment back to the judge.
 
 A generated file edited by hand since the run last wrote it is written over,
 and the run says so in a warning; keep your changes in a file of your own
@@ -236,6 +242,29 @@ unchecked, and the screenshot or why there is none, so CI can fail on them.
 A judgment of a test this run did not refresh is listed too, marked
 `carried`, and the warning counts it as one from an earlier run.
 
+### When a test failed
+
+When a test fails in a way that says something about the app (an assertion
+that did not hold, a step that timed out, a locator that found nothing), its
+code is written again from that run, up to the failure, and stops there:
+
+```ts
+// agent.assert: the order is confirmed
+// FAILED: in the run this code was written from, the test failed here: ASSERTION_FAILED: the page shows the cart, not a confirmation
+//   The judge's explanation of its verdict (its reasoning, not a checked fact): The page still lists the hat in the cart and shows no order number.
+//   Screenshot at the failure: .e2e/artifacts/web/tests_checkout.e2e.ts___buys_a_hat/default/attempt-0/screenshots/004-failure.png
+throw new Error("agent.assert(\"the order is confirmed\") failed in the run this code was written from (ASSERTION_FAILED)");
+```
+
+What the agent did before the failure is written as the run did it, an
+`agent.act` that failed part way included. When the test's own code failed
+(an `expect`, a `screen` action), Playwright stops on that same line, so the
+comment goes at the top of the test and names the line. The calls after the
+failure throw, as calls the run did not reach. The run warns about each such
+test, and `report.json` lists it under `run.codegen.failures`. The test's
+earlier code stays in the history of the file, for the diff to show what
+broke.
+
 ### How a node is found
 
 A node is found by test id first, then role and accessible name, then
@@ -287,10 +316,9 @@ that overrides the secret in the e2e config, the same one the helpers read.
 
 ## What a run cannot record
 
-- A test that never passed, or whose last failure dropped its code, is still
-  converted, but each of its agent calls is a `throw`: there is no recording
-  to write from it. The same goes for a call no passing run reached, such as
-  one inside an `if` the run never entered.
+- A call the run never reached, such as one after a failure or inside an
+  `if` the run never entered, is a `throw`: there is no recording to write
+  from it.
 - A project tool the agent called, or a value it typed that it read off the
   screen in that run, is a `TODO` comment inside the step.
 - A step whose recording could not be kept whole (a value that held a secret,

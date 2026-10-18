@@ -6,7 +6,7 @@
  * step-list fallback (`codegen.ts`).
  */
 
-import type { CodegenAction, CodegenCheck, CodegenJudgmentGap, CodegenScreenNode, CodegenTargetDescriptor } from 'e2e/engine';
+import type { CodegenAction, CodegenCheck, CodegenFailure, CodegenJudgmentGap, CodegenScreenNode, CodegenTargetDescriptor } from 'e2e/engine';
 
 /** The roles `page.getByRole` takes that the engine's tree also reports; anything else falls back to text or selector. */
 const ARIA_ROLES: ReadonlySet<string> = new Set([
@@ -298,6 +298,25 @@ export function gapComments(gap: CodegenJudgmentGap, converted: boolean): string
 /** Model-written text on one comment line: whitespace collapsed and control characters dropped. */
 function commentText(text: string): string {
   return oneLine(text.replaceAll(/\p{Cc}/gu, ' '));
+}
+
+/**
+ * The comment lines that say a test failed here in the run its code was
+ * written from: the error, the judge's explanation for a judgment that did
+ * not hold (its reasoning, not a checked fact), and the screenshot taken at
+ * the failure, or why there is none. `where` names the step for a failure
+ * the comment is not placed at.
+ */
+export function failureComments(failure: CodegenFailure, where?: string): string[] {
+  return [
+    `// FAILED: in the run this code was written from, the test failed ${where === undefined ? 'here' : `at ${commentText(where)}`}: ${commentText(failure.code)}: ${commentText(failure.message)}`,
+    ...(failure.explanation === undefined ? [] : [`//   The judge's explanation of its verdict (its reasoning, not a checked fact): ${commentText(failure.explanation)}`]),
+    ...(failure.screenshot !== undefined
+      ? [`//   Screenshot at the failure: ${commentText(failure.screenshot)}`]
+      : failure.screenshotWithheld === undefined
+        ? []
+        : [`//   No screenshot: ${commentText(failure.screenshotWithheld)}`]),
+  ];
 }
 
 /** Marks a line as the start of a judgment with a gap, for `takeGapLines` to find once the file is whole. */

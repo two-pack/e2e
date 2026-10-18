@@ -26,8 +26,9 @@ import { Invocation, type AgentContext } from './invocation.ts';
 import { prepareObservation, type AgentObservation, type RedactedNode } from './observation.ts';
 import { isRelocatableDescriptor, describePosition } from '../cache/relocate.ts';
 import type { TraceTargetDescriptor } from '../cache/trace.ts';
-import type { CodegenCheck, CodegenDroppedCheck, CodegenJudgmentGap, CodegenTargetDescriptor } from '../engine/codegen.ts';
-import { codegenExtrasOf, displayedTextOf, type CodegenLog, type CodegenScreenshot, type SeenScreens } from '../run/codegen.ts';
+import type { CodegenCheck, CodegenDroppedCheck, CodegenJudgment, CodegenJudgmentGap, CodegenTargetDescriptor } from '../engine/codegen.ts';
+import { codegenExtrasOf, displayedTextOf, stillShown, type CodegenLog, type CodegenScreenshot, type SeenScreens } from '../run/codegen.ts';
+import { relocateDescriptor } from '../cache/relocate.ts';
 import { carriesSecretMarker } from '../internal/redact.ts';
 import { bound } from '../cache/trace.ts';
 import { collapseText } from '../internal/text.ts';
@@ -142,10 +143,23 @@ export async function recordCodegenJudgment(runtime: AgentContext, request: Code
   const stepId = runtime.steps.currentStepId;
   const codegen = runtime.codegen;
   if (codegen === undefined || stepId === undefined) return;
-  const derived = await deriveCodegenChecks(runtime, codegen, request);
-  const checks = derived?.checks ?? [];
   const serialized = request.value === undefined ? undefined : JSON.stringify(request.value);
   const keepValue = serialized !== undefined && runtime.redact(serialized) === serialized;
+  // The checks the test's last recorded run made for this judgment, reused
+  // when every one still holds: the code then stays the same while the page
+  // does, and the judge is not asked again.
+  const label = runtime.steps.all().find((step) => step.id === stepId)?.label;
+  const occurrence = runtime.steps.all().filter((step) => step.id !== stepId && step.api === request.api && step.label === label).length;
+  const previous = label === undefined ? undefined : codegen.previousJudgment(request.api, label, occurrence);
+  const reused = previous !== undefined && JSON.stringify(previous.value) === serialized ? await reusable(runtime, codegen, request, previous) : undefined;
+  if (reused !== undefined) {
+    const { screenshot: _shot, screenshotWithheld: _withheld, ...gap } = reused.gap ?? { uncovered: [], dropped: [] };
+    const screenshot = reused.gap === undefined ? undefined : (request.screenshot ?? (await screenshotForGap(runtime)));
+    codegen.judged(stepId, { checks: reused.checks, ...(keepValue ? { value: request.value } : {}), ...(reused.gap === undefined ? {} : { gap }) }, screenshot);
+    return;
+  }
+  const derived = await deriveCodegenChecks(runtime, codegen, request);
+  const checks = derived?.checks ?? [];
   const uncovered = derived?.uncovered ?? [];
   const explanation = request.explanation === undefined ? undefined : safeText(request.explanation, runtime.redact);
   const gap: CodegenJudgmentGap | undefined =
@@ -163,6 +177,95 @@ export async function recordCodegenJudgment(runtime: AgentContext, request: Code
     },
     screenshot,
   );
+}
+
+/**
+ * The judgment the last recorded run kept, when every check of it holds on
+ * the screen this judgment passed on; undefined when one does not, or there
+ * is no screen to hold them against.
+ */
+async function reusable(
+  runtime: AgentContext,
+  codegen: CodegenLog,
+  request: CodegenChecksRequest,
+  previous: CodegenJudgment,
+): Promise<CodegenJudgment | undefined> {
+  try {
+    const observation =
+      request.observation ??
+      (await new Invocation(runtime, {
+        api: request.api,
+        agent: request.agent,
+        label: request.instruction,
+        task: 'hold the checks a judgment made last time against the screen',
+        timeoutMs: request.timeoutMs,
+        maxModelCalls: 0,
+        vision: false,
+      }).observe());
+    if (observation.kind !== 'semantic' || observation.truncated) return undefined;
+    const locate = (target: CodegenTargetDescriptor): readonly string[] | undefined => codegen.locate(target, observation);
+    return previous.checks.every((check) => holds(check, observation, locate)) ? previous : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether a check a script makes still holds on this screen, read the way
+ * the code reads it: its node found by the locator the engine writes, else
+ * by e2e's own matching, and the node in the state the check expects.
+ */
+function holds(
+  check: CodegenCheck,
+  observation: Extract<AgentObservation, { kind: 'semantic' }>,
+  locate: (target: CodegenTargetDescriptor) => readonly string[] | undefined,
+): boolean {
+  const nodes = [...observation.nodes.values()];
+  const find = (target: CodegenTargetDescriptor): RedactedNode | undefined => {
+    const found = locate(target);
+    if (found !== undefined) {
+      const { position } = target;
+      const id = position !== undefined && position.of > 1 ? (found.length === position.of ? found[position.index] : undefined) : found.length === 1 ? found[0] : undefined;
+      return id === undefined ? undefined : observation.nodes.get(id);
+    }
+    const relocated = relocateDescriptor(target, observation.nodes);
+    return relocated.kind === 'found' ? observation.nodes.get(relocated.id) : undefined;
+  };
+  const ofRole = (role: string): RedactedNode[] => nodes.filter((node) => node.role === role && node.states?.hidden !== true);
+  switch (check.kind) {
+    case 'visible': {
+      const node = find(check.target);
+      return node !== undefined && node.states?.hidden !== true;
+    }
+    case 'text': {
+      const node = find(check.target);
+      return node !== undefined && shownReadsOf(node).some((read) => read.includes(check.text));
+    }
+    case 'value': {
+      const node = find(check.target);
+      return node !== undefined && collapseText(node.value ?? '') === check.value;
+    }
+    case 'checked': {
+      const node = find(check.target);
+      return node !== undefined && (node.states?.checked === true) === check.checked;
+    }
+    case 'enabled': {
+      const node = find(check.target);
+      return node !== undefined && (node.states?.disabled !== true) === check.enabled;
+    }
+    case 'count':
+      return ofRole(check.role).length === check.count;
+    case 'order': {
+      const texts = ofRole(check.role).map((item) => displayedTextOf(item) || collapseText(item.name ?? ''));
+      return texts.length === check.texts.length && texts.every((text, index) => text === check.texts[index]);
+    }
+    case 'absent':
+      return !nodes.some((node) => readsOf(node).some((read) => read.includes(check.text)));
+    case 'gone':
+      return !stillShown(check.target, observation) && (locate(check.target)?.length ?? 0) === 0;
+    case 'url':
+      return observation.location === check.location;
+  }
 }
 
 /** What the question left: the kept checks, the parts of the instruction they leave unproven, and the checks dropped. */

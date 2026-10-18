@@ -118,6 +118,9 @@ const EXECUTOR_MODULE = `export const tapper = {
  */
 function judge(call: FakeCall): unknown {
   if (call.schemaName !== 'agent-codegen-checks-1') throw new Error(`unexpected ${call.schemaName}`);
+  // Counted on the global, so a worker's config that embeds this function's source counts too.
+  const counted = globalThis as { codegenChecksAsked?: string[] };
+  counted.codegenChecksAsked = [...(counted.codegenChecksAsked ?? []), call.instruction];
   if (call.instruction.includes('replaced')) {
     const earlier = /^(p\d+) button "Increment"/mu.exec(call.prompt)?.[1] ?? null;
     return { checks: [{ kind: 'gone', node: earlier, text: null, covers: 'the Increment button was replaced' }], uncovered: ['nothing is broken'] };
@@ -290,7 +293,10 @@ describe('--codegen on the in-process transport', () => {
     expect(report.dir).toBe('e2e-gen');
     expect([...report.files].toSorted()).toEqual([posix(OTHER), posix(SPEC)].toSorted());
     expect(report.gaps).toEqual([gap, replaced]);
+    expect(report.failures.map((failure) => [failure.test, failure.code])).toEqual([['fails after the agent acted', 'ASSERTION_FAILED']]);
+    const failure = report.failures[0]!;
     expect(warnings).toEqual([
+      `--codegen: 1 test failed in the run its code was written from, and the code stops there: ${failure.file}:${String(failure.line)} (screenshot ${failure.screenshot!})`,
       `--codegen: 2 judgments were only partly converted: ${gap.file}:${String(gap.line)} (screenshot ${gap.screenshot!}), ${replaced.file}:${String(replaced.line)} (screenshot ${replaced.screenshot!})`,
     ]);
   });
@@ -321,15 +327,20 @@ describe('--codegen on the in-process transport', () => {
     expect(code).not.toContain('getByText("Login"');
   });
 
-  it('keeps a failing test, whose agent call recorded nothing, throwing where the call was', () => {
+  it('writes a test that failed up to its failure, with the error and the screenshot at the failure on top', () => {
     const code = readFileSync(path.join(project.dir, SPEC), 'utf8');
-    expect(code).toContain(
+    const block = code.slice(code.indexOf("test('fails after the agent acted'"));
+    const lines = block.split('\n');
+    expect(lines[1]).toMatch(/^ {2}\/\/ FAILED: in the run this code was written from, the test failed at line \d+ \(expect\.toHaveText getByRole\("status"\)\): ASSERTION_FAILED: /u);
+    expect(lines[2]).toMatch(/^ {2}\/\/ {3}Screenshot at the failure: \.e2e\/artifacts\/\S+\.png$/u);
+    expect(existsSync(path.join(project.dir, /: (\S+)$/u.exec(lines[2]!)![1]!))).toBe(true);
+    // What the agent did before the test failed is written as the run did it; the test's own expect fails on its own line.
+    expect(lines.slice(3, 7).join('\n')).toBe(
       [
-        "test('fails after the agent acted', async ({ page }) => {",
         '  await page.goto("/");',
         '  // agent.act: increment the counter once',
-        '  // TODO: no passing run reached this call, so nothing was recorded for it.',
-        '  throw new Error("agent.act(\\"increment the counter once\\") was not recorded by e2e run --codegen");',
+        '  await page.getByRole("button", { name: "Increment", exact: true }).click();',
+        "  await expect(page.getByRole('status')).toHaveText('2', { timeout: 200 });",
       ].join('\n'),
     );
   });
@@ -337,7 +348,11 @@ describe('--codegen on the in-process transport', () => {
   it('writes the same code when the cache replays the step, and leaves a file none of whose tests ran as it was', async () => {
     const before = readFileSync(path.join(project.dir, SPEC), 'utf8');
     const other = statSync(path.join(project.dir, OTHER));
+    const counted = globalThis as { codegenChecksAsked?: string[] };
+    counted.codegenChecksAsked = [];
     const replayed = await rerun(/increments through the agent/);
+    // The judgment's checks still held on the screen, so they were reused and the judge was not asked again.
+    expect(counted.codegenChecksAsked).toEqual([]);
     expect(resultByTitle(replayed, 'increments through the agent').status).toBe('passed');
     const step = resultByTitle(replayed, 'increments through the agent').attempts[0]!.steps.find((candidate) => candidate.api === 'agent.act');
     expect(step?.cache?.mode).toBe('self-finalized');
@@ -347,7 +362,24 @@ describe('--codegen on the in-process transport', () => {
     expect(replayed.report.run.codegen?.gaps.map((gap) => gap.carried)).toEqual([true, true]);
   });
 
-  it("drops a test's code when it fails in a way that implicates the app, and keeps it when only the model did not answer", async () => {
+  it("asks the judge again when a judgment's last checks no longer hold on the screen", async () => {
+    // The record says the counter read 7: on a screen that reads 1, that check fails, so it cannot be reused.
+    const recordFile = path.join(project.dir, '.e2e', 'codegen', 'web', 'tests', 'counter.e2e.ts.json');
+    const record = JSON.parse(readFileSync(recordFile, 'utf8')) as {
+      tests: { test: { title: string; steps: { judgment?: { checks: { kind: string; text?: string }[] } }[] } }[];
+    };
+    const checks = record.tests.find((stored) => stored.test.title === 'increments through the agent')!.test.steps.flatMap((step) => step.judgment?.checks ?? []);
+    const text = checks.find((check) => check.kind === 'text')!;
+    text.text = '7';
+    writeFileSync(recordFile, JSON.stringify(record), 'utf8');
+    const counted = globalThis as { codegenChecksAsked?: string[] };
+    counted.codegenChecksAsked = [];
+    await rerun(/increments through the agent/);
+    expect(counted.codegenChecksAsked).toEqual(['the counter shows 1']);
+    expect(readFileSync(path.join(project.dir, SPEC), 'utf8')).toContain(`await expect(${COUNTER}).toContainText("1");`);
+  });
+
+  it("writes a test's code again up to a failure that implicates the app, and keeps it when only the model did not answer", async () => {
     const before = readFileSync(path.join(project.dir, OTHER), 'utf8');
     expect(before).toContain("test('breaks on demand', async ({ page }) => {\n  await page.goto(\"/\");\n  // agent.act: increment the counter once\n  await page.getByRole");
     process.env['CODEGEN_BREAK'] = '1';
@@ -366,7 +398,12 @@ describe('--codegen on the in-process transport', () => {
     const code = readFileSync(path.join(project.dir, OTHER), 'utf8');
     const breaks = code.slice(code.indexOf("test('breaks on demand'"), code.indexOf("test('waits on demand'"));
     const waits = code.slice(code.indexOf("test('waits on demand'"));
-    expect(breaks).toContain('throw new Error("agent.act(\\"increment the counter once\\") was not recorded by e2e run --codegen");');
+    expect(breaks).toMatch(/^test\('breaks on demand', async \(\{ page \}\) => \{\n {2}\/\/ FAILED: in the run this code was written from, the test failed at line \d+ \(expect\.toHaveText/u);
+    expect(breaks).toContain('  // agent.act: increment the counter once\n  await page.getByRole("button", { name: "Increment", exact: true }).click();');
+    expect(broken.report.run.codegen?.failures.map((failure) => [failure.test, failure.carried])).toEqual([
+      ['fails after the agent acted', true],
+      ['breaks on demand', undefined],
+    ]);
     expect(waits).toBe(before.slice(before.indexOf("test('waits on demand'")));
   });
 

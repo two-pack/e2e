@@ -34,7 +34,7 @@ import {
 } from '../internal/errors.ts';
 import { loadAiSdk } from '../agent/ai-sdk.ts';
 import { AiTraceCollector, AiTraceRecorder, registerAiTraceRecorder } from '../internal/ai-trace.ts';
-import { CodegenSync, codegenGapWarnings, reportCodegen, type CodegenCollectionView, type CodegenOutput } from './codegen-sync.ts';
+import { CodegenSync, codegenFailureWarnings, codegenGapWarnings, reportCodegen, type CodegenCollectionView, type CodegenOutput } from './codegen-sync.ts';
 import { DebugTrace } from '../internal/debug.ts';
 import { resultId, timestamp, uuidv7 } from '../internal/ids.ts';
 import type { ExploreProgress } from '../explore/progress.ts';
@@ -647,7 +647,9 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       for (const file of output.overwritten) {
         emit({ type: 'notice', target: 'run', message: `--codegen wrote ${file} over edits made to it since e2e last wrote it`, level: 'warning' });
       }
-      for (const message of codegenGapWarnings(output.gaps)) emit({ type: 'notice', target: 'run', message, level: 'warning' });
+      for (const message of [...codegenFailureWarnings(output.failures), ...codegenGapWarnings(output.gaps)]) {
+        emit({ type: 'notice', target: 'run', message, level: 'warning' });
+      }
       return output;
     } catch (cause) {
       recordFailure(

@@ -139,6 +139,26 @@ export interface CodegenStep {
   readonly recording?: CodegenRecording;
   /** Present for a judgment step that passed with `--codegen` on. */
   readonly judgment?: CodegenJudgment;
+  /** Present on the step the test failed at, in a run that failed in a way that says something about the app. */
+  readonly failure?: CodegenFailure;
+}
+
+/**
+ * How a test failed in the run its code was written from. The code is
+ * written up to the failure and stops there, so a reader sees what the run
+ * did, where it broke, and the screen it broke on.
+ */
+export interface CodegenFailure {
+  /** The error code, such as `ASSERTION_FAILED` or `STEP_TIMEOUT`. */
+  readonly code: string;
+  /** The error message as the report records it, redacted. */
+  readonly message: string;
+  /** For a judgment that did not hold: the judge's explanation, model output, redacted. */
+  readonly explanation?: string;
+  /** The screenshot taken at the failure, in the run's artifacts, project-root relative. */
+  readonly screenshot?: string;
+  /** Why there is no screenshot. */
+  readonly screenshotWithheld?: string;
 }
 
 /** One passing test, by title, with its steps. */
@@ -147,6 +167,12 @@ export interface CodegenTest {
   /** Describe titles, outermost first, then the test's own. */
   readonly titlePath: readonly string[];
   readonly steps: readonly CodegenStep[];
+  /**
+   * How the test failed when no agent step carries the failure: the test's
+   * own code (an `expect`, a locator action), a hook, or the test body threw.
+   * `api`, `label`, and `line` name the step it failed at, when one did.
+   */
+  readonly failure?: CodegenFailure & { readonly api?: string; readonly label?: string; readonly line?: number };
 }
 
 /** One test file's passing tests on one target: the unit `render` writes. */
@@ -174,6 +200,12 @@ export interface CodegenRendered {
    * after the run; it never reads `code`.
    */
   readonly gaps: readonly { readonly test: number; readonly step: number; readonly line: number }[];
+  /**
+   * Where the code says each test with a failure failed, once per test: the
+   * test by its index into `CodegenFile.tests`, and the one-based line of
+   * `code` the failure's comment starts at.
+   */
+  readonly failures: readonly { readonly test: number; readonly line: number }[];
 }
 
 /**

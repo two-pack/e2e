@@ -3,13 +3,13 @@
  * target, kept in step with the tests the way the replay cache keeps its
  * entries.
  *
- * Every test's last passing recordings are kept in a record per e2e file and
- * target under `<output>/codegen/`, beside the digest of the e2e source they
- * were recorded from and of the code last written from them. A run refreshes
- * the tests it ran: a pass replaces a test's recordings, a failure that says
- * something about the app (as the cache judges it) drops them, and anything
- * else (a test the run did not select, an interrupt, a failure where no model
- * answered) leaves them. A test or an e2e file the project no longer has is
+ * Every test's last recordings are kept in a record per e2e file and target
+ * under `<output>/codegen/`, beside the digest of the e2e source they were
+ * recorded from and of the code last written from them. A run refreshes the
+ * tests it ran: a pass replaces a test's recordings, and so does a failure
+ * that says something about the app (as the cache judges it), whose code then
+ * stops where it failed; anything else (a test the run did not select, an
+ * interrupt, a failure where no model answered) leaves them. A test or an e2e file the project no longer has is
  * dropped with its code. A file none of whose tests ran, and whose source has
  * not changed, is left exactly as it is; any other is written again whole,
  * from the current source and the kept recordings, into `codegen.outDir`.
@@ -21,11 +21,11 @@
 
 import { createHash } from 'node:crypto';
 import { readdir, readFile, rm, rmdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { ResolvedConfig } from '../config/resolve.ts';
-import type { CodegenFile, CodegenRendered, CodegenStep, CodegenTest } from '../engine/codegen.ts';
-import type { ReportCodegen, ReportCodegenGap } from '../report/build.ts';
+import type { CodegenFailure, CodegenFile, CodegenRendered, CodegenStep, CodegenTest } from '../engine/codegen.ts';
+import type { ReportCodegen, ReportCodegenFailure, ReportCodegenGap } from '../report/build.ts';
 import { writeJsonReport, writeTextReport } from '../report/write.ts';
 import type { CodegenAttempt, CodegenScreenshot } from './codegen.ts';
 import { outputLayout } from './output.ts';
@@ -34,7 +34,7 @@ import type { ResultRecord } from './records.ts';
 /** The record format's version; a record of another one is read as absent. */
 const CODEGEN_RECORD_VERSION = 1;
 
-/** One test as a record keeps it: its last passing recordings and where they came from. */
+/** One test as a record keeps it: its last recordings, of a pass or of a failure that implicates the app, and where they came from. */
 export interface StoredCodegenTest {
   /** The test's id: its file and title path. */
   readonly id: string;
@@ -64,17 +64,20 @@ export interface CodegenRecord {
   readonly tests: readonly StoredCodegenTest[];
   /** The judgments the code did not prove whole when it was written. */
   readonly gaps: readonly CodegenGapRecord[];
+  /** The tests whose code stops at a failure, as written. */
+  readonly failures: readonly CodegenFailureRecord[];
 }
 
 /** One judgment the generated code does not prove whole, as the report and the records keep it. */
 export type CodegenGapRecord = ReportCodegenGap;
 
+/** One test whose code stops where it failed, as the report and the records keep it. */
+export type CodegenFailureRecord = ReportCodegenFailure;
+
 /** What this run did with one test, for its record. */
 export type CodegenOutcome =
-  /** It passed: its recordings replace the kept ones. */
-  | { readonly kind: 'passed'; readonly test: StoredCodegenTest }
-  /** It failed in a way that says something about the app: its recordings go. */
-  | { readonly kind: 'dropped' }
+  /** It passed, or failed in a way that says something about the app: its recordings replace the kept ones. */
+  | { readonly kind: 'recorded'; readonly test: StoredCodegenTest }
   /** It ran, but nothing it did says its kept recordings are wrong. */
   | { readonly kind: 'kept' };
 
@@ -140,12 +143,9 @@ export function planCodegenSync(input: {
     const tests = new Map((record?.tests ?? []).map((stored) => [stored.id, stored]));
     const fresh = new Set<string>();
     for (const [id, outcome] of outcomes) {
-      if (outcome.kind === 'passed') {
-        tests.set(id, outcome.test);
-        fresh.add(id);
-      } else if (outcome.kind === 'dropped') {
-        tests.delete(id);
-      }
+      if (outcome.kind !== 'recorded') continue;
+      tests.set(id, outcome.test);
+      fresh.add(id);
     }
     let pruned = false;
     if (declared !== undefined) {
@@ -203,6 +203,8 @@ export interface CodegenOutput {
   readonly unsupported: readonly { readonly target: string; readonly engine: string }[];
   /** Every judgment the code does not prove whole, written in this run or kept from an earlier one. */
   readonly gaps: readonly CodegenGapRecord[];
+  /** Every test whose code stops where it failed, written in this run or kept from an earlier one. */
+  readonly failures: readonly CodegenFailureRecord[];
   /** Generated files that were edited by hand and written over, project-root relative. */
   readonly overwritten: readonly string[];
 }
@@ -210,7 +212,7 @@ export interface CodegenOutput {
 /** One test's result in this run, before its screenshots are placed. */
 interface PendingOutcome {
   readonly result: ResultRecord;
-  readonly outcome: 'passed' | 'dropped' | 'kept';
+  readonly outcome: 'passed' | 'failed' | 'kept';
   readonly recordings: CodegenAttempt | undefined;
 }
 
@@ -253,15 +255,16 @@ export class CodegenSync {
 
   /**
    * Notes what a result's last attempt did. A pass is kept with its
-   * recordings; a failure the attempt says implicates the app drops the
-   * test's earlier code; anything else (skipped, interrupted, a failure where
-   * no model answered, a result whose attempt recorded nothing) leaves it.
+   * recordings, and so is a failure the attempt says implicates the app, the
+   * test's code then stopping where it failed; anything else (skipped,
+   * interrupted, a failure where no model answered, a result whose attempt
+   * recorded nothing) leaves the test's earlier code.
    */
   add(result: ResultRecord, recordings: CodegenAttempt | undefined): void {
     const attempt = result.attempts.at(-1);
     if (attempt === undefined) return;
     const own = recordings?.attemptId === attempt.id ? recordings : undefined;
-    const outcome = attempt.status === 'passed' ? 'passed' : own?.implicates === true ? 'dropped' : 'kept';
+    const outcome = attempt.status === 'passed' ? 'passed' : own?.implicates === true ? 'failed' : 'kept';
     this.pending.push({ result, outcome, recordings: own });
   }
 
@@ -278,6 +281,8 @@ export class CodegenSync {
     const named = writers.size > 1;
     const unsupported = new Map<string, string>();
     const outcomes = new Map<string, { file: string; target: string; tests: Map<string, CodegenOutcome> }>();
+    const failedRuns = new Set<string>();
+    const artifactsRoot = outputLayout(config.output).artifacts;
     const now = new Date().toISOString();
     for (const { result, outcome, recordings } of this.pending) {
       const target = result.target.name;
@@ -291,13 +296,16 @@ export class CodegenSync {
       outcomes.set(key, entry);
       const id = result.test.id;
       const current = entry.tests.get(id);
-      // A test run several times (repeats, agents) is dropped by any failure that implicates the app, else kept by its first pass.
-      if (current?.kind === 'dropped' || (current?.kind === 'passed' && outcome !== 'dropped')) continue;
-      if (outcome === 'passed') {
-        entry.tests.set(id, { kind: 'passed', test: { id, test: codegenTest(result, recordings, config.projectRoot), sourceDigest: '', runId, recordedAt: now } });
-      } else {
-        entry.tests.set(id, { kind: outcome });
-      }
+      const failed = failedRuns.has(`${key}\u0000${id}`);
+      // A test run several times (repeats, agents) is written from its first failure that implicates the app, else its first pass.
+      if (outcome === 'kept' ? current !== undefined : current?.kind === 'recorded' && (failed || outcome === 'passed')) continue;
+      if (outcome === 'failed') failedRuns.add(`${key}\u0000${id}`);
+      entry.tests.set(
+        id,
+        outcome === 'kept'
+          ? { kind: 'kept' }
+          : { kind: 'recorded', test: { id, test: codegenTest(result, recordings, config.projectRoot, artifactsRoot), sourceDigest: '', runId, recordedAt: now } },
+      );
     }
     const records = await readRecords(recordsDir);
     const files = new Set([...records.map((record) => record.file), ...[...outcomes.values()].map((entry) => entry.file)]);
@@ -312,7 +320,7 @@ export class CodegenSync {
     // A pass this run was recorded against the source as it is now.
     for (const entry of outcomes.values()) {
       for (const [id, outcome] of entry.tests) {
-        if (outcome.kind === 'passed') entry.tests.set(id, { kind: 'passed', test: { ...outcome.test, sourceDigest: sources.get(entry.file) ?? '' } });
+        if (outcome.kind === 'recorded') entry.tests.set(id, { kind: 'recorded', test: { ...outcome.test, sourceDigest: sources.get(entry.file) ?? '' } });
       }
     }
 
@@ -320,9 +328,11 @@ export class CodegenSync {
     const deleted: string[] = [];
     const overwritten: string[] = [];
     const gaps: CodegenGapRecord[] = [];
+    const failures: CodegenFailureRecord[] = [];
     for (const action of planCodegenSync({ records, outcomes, collection, sources })) {
       if (action.kind === 'keep') {
         gaps.push(...action.record.gaps.map((gap) => carriedGap(gap, config.projectRoot)));
+        failures.push(...(action.record.failures ?? []).map((failure) => carriedGap(failure, config.projectRoot)));
         continue;
       }
       if (action.kind === 'delete') {
@@ -362,6 +372,8 @@ export class CodegenSync {
       const code = relativeTo(config.projectRoot, output);
       const fileGaps = renderedGaps(rendered, action, code, config.projectRoot);
       gaps.push(...fileGaps);
+      const fileFailures = renderedFailures(rendered, action, code, config.projectRoot);
+      failures.push(...fileFailures);
       const record: CodegenRecord = {
         version: CODEGEN_RECORD_VERSION,
         file: action.file,
@@ -373,6 +385,7 @@ export class CodegenSync {
         writtenAt: now,
         tests: action.tests,
         gaps: fileGaps.map(({ carried: _carried, ...gap }) => gap),
+        failures: fileFailures.map(({ carried: _carried, ...failure }) => failure),
       };
       await writeJsonReport(recordPath(recordsDir, action.file, action.target), record);
     }
@@ -382,19 +395,39 @@ export class CodegenSync {
       deleted,
       unsupported: [...unsupported].map(([target, engine]) => ({ target, engine })),
       gaps,
+      failures,
       overwritten,
     };
   }
 }
 
+/** Why a failure's comment names no screenshot. */
+const NO_FAILURE_SCREENSHOT = 'no screenshot was taken at the failure';
+
 /**
  * A result's test with the recordings its attempt shipped, each judgment's
- * screenshot named on its gap by its project-root relative path.
+ * screenshot named on its gap by its project-root relative path, and, for a
+ * failed attempt, the failure on the agent step it happened at or on the
+ * test, with the screenshot taken at the failure.
  */
-function codegenTest(result: ResultRecord, recordings: CodegenAttempt | undefined, projectRoot: string): CodegenTest {
+function codegenTest(result: ResultRecord, recordings: CodegenAttempt | undefined, projectRoot: string, artifactsRoot: string): CodegenTest {
   const attempt = result.attempts.at(-1);
   const recorded = recordings?.steps ?? {};
-  const steps = (attempt?.steps ?? []).map((step): CodegenStep => {
+  const failedAt = attempt?.status === 'passed' ? -1 : (attempt?.steps ?? []).findIndex((step) => step.status !== 'passed' && step.error !== undefined);
+  const failedStep = failedAt === -1 ? undefined : attempt?.steps[failedAt];
+  const error = failedStep?.error ?? attempt?.error;
+  let failure: CodegenFailure | undefined;
+  if (attempt !== undefined && attempt.status !== 'passed' && error !== undefined) {
+    const shot = attempt.failure?.screenshot === undefined ? undefined : attempt.artifacts.find((artifact) => artifact.id === attempt.failure?.screenshot)?.path;
+    failure = {
+      code: error.code,
+      message: error.message,
+      ...(failedStep?.explanation === undefined ? {} : { explanation: failedStep.explanation }),
+      ...(shot === undefined ? { screenshotWithheld: NO_FAILURE_SCREENSHOT } : { screenshot: relativeTo(projectRoot, path.join(artifactsRoot, shot)) }),
+    };
+  }
+  const onAgentStep = failure !== undefined && failedStep !== undefined && failedStep.api.startsWith('agent.');
+  const steps = (attempt?.steps ?? []).map((step, index): CodegenStep => {
     const data = recorded[step.id];
     const judgment = data?.judgment === undefined ? undefined : withScreenshot(data.judgment, data.screenshot, projectRoot);
     return {
@@ -403,9 +436,18 @@ function codegenTest(result: ResultRecord, recordings: CodegenAttempt | undefine
       ...(step.source === undefined ? {} : { line: step.source.line, column: step.source.column }),
       ...(data?.recording === undefined ? {} : { recording: data.recording }),
       ...(judgment === undefined ? {} : { judgment }),
+      ...(onAgentStep && index === failedAt && failure !== undefined ? { failure } : {}),
     };
   });
-  return { title: result.test.title, titlePath: [...result.test.titlePath], steps };
+  const testFailure =
+    failure === undefined || onAgentStep
+      ? undefined
+      : {
+          ...failure,
+          ...(failedStep === undefined ? {} : { api: failedStep.api, label: failedStep.label }),
+          ...(failedStep?.source === undefined ? {} : { line: failedStep.source.line }),
+        };
+  return { title: result.test.title, titlePath: [...result.test.titlePath], steps, ...(testFailure === undefined ? {} : { failure: testFailure }) };
 }
 
 /** A judgment with its gap naming the screenshot the step took, or why there is none. */
@@ -424,11 +466,14 @@ function withScreenshot(
 /** Why a gap kept from an earlier run names no screenshot once that run's artifacts are gone. */
 const SCREENSHOT_GONE = 'the screenshot was in an earlier run’s artifacts, which a later run cleared';
 
-/** A gap kept from an earlier run, its screenshot named only while the file is still there. */
-function carriedGap(gap: CodegenGapRecord, projectRoot: string): CodegenGapRecord {
+/** A gap or a failure kept from an earlier run, its screenshot named only while the file is still there. */
+function carriedGap<Record extends { readonly screenshot?: string; readonly screenshotWithheld?: string; readonly carried?: boolean }>(
+  gap: Record,
+  projectRoot: string,
+): Record {
   if (gap.screenshot === undefined || existsSync(path.join(projectRoot, gap.screenshot))) return { ...gap, carried: true };
   const { screenshot: _screenshot, ...rest } = gap;
-  return { ...rest, screenshotWithheld: SCREENSHOT_GONE, carried: true };
+  return { ...rest, screenshotWithheld: SCREENSHOT_GONE, carried: true } as Record;
 }
 
 /** The gaps `render` reported for a file, each with its test's judgment, carried when this run did not record the test. */
@@ -459,6 +504,34 @@ function renderedGaps(
   });
 }
 
+/** The failures `render` reported for a file, each with its test's failure, carried when this run did not record the test. */
+function renderedFailures(
+  rendered: CodegenRendered,
+  action: Extract<CodegenSyncAction, { kind: 'render' }>,
+  code: string,
+  projectRoot: string,
+): CodegenFailureRecord[] {
+  return (rendered.failures ?? []).flatMap((site) => {
+    const stored = action.tests[site.test];
+    if (stored === undefined) return [];
+    const step = stored.test.steps.find((candidate) => candidate.failure !== undefined);
+    const failure = step?.failure ?? stored.test.failure;
+    if (failure === undefined) return [];
+    const record: CodegenFailureRecord = {
+      file: code,
+      line: site.line,
+      source: action.file,
+      test: stored.test.title,
+      ...(step === undefined ? {} : { api: step.api, label: step.label }),
+      code: failure.code,
+      message: failure.message,
+      ...(failure.screenshot === undefined ? {} : { screenshot: failure.screenshot }),
+      ...(failure.screenshotWithheld === undefined ? {} : { screenshotWithheld: failure.screenshotWithheld }),
+    };
+    return action.fresh.has(stored.id) ? [record] : [carriedGap(record, projectRoot)];
+  });
+}
+
 /** Whether `inner` is below `outer`. */
 function isInside(inner: string, outer: string): boolean {
   const relative = path.relative(outer, inner);
@@ -473,6 +546,22 @@ async function pruneEmpty(dir: string, stop: string): Promise<void> {
     } catch {
       return;
     }
+  }
+}
+
+/**
+ * What the record of an e2e file on a target keeps for one test, read in the
+ * worker as an attempt starts: the judgments it checked last time, for a
+ * judgment to reuse when they still hold. Undefined when there is none or it
+ * cannot be read.
+ */
+export function readStoredTest(recordsDir: string, file: string, target: string, testId: string): StoredCodegenTest | undefined {
+  try {
+    const value = JSON.parse(readFileSync(recordPath(recordsDir, file, target), 'utf8')) as Partial<CodegenRecord>;
+    if (value.version !== CODEGEN_RECORD_VERSION || !Array.isArray(value.tests)) return undefined;
+    return value.tests.find((stored) => stored.id === testId);
+  } catch {
+    return undefined;
   }
 }
 
@@ -530,7 +619,12 @@ export async function clearCodegen(config: ResolvedConfig): Promise<{ readonly r
 
 /** The report's `run.codegen` block for what a write produced, its paths project-root relative. */
 export function reportCodegen(output: CodegenOutput, projectRoot: string): ReportCodegen {
-  return { dir: relativeTo(projectRoot, output.dir) || '.', files: output.files.map((file) => relativeTo(projectRoot, file)), gaps: output.gaps };
+  return {
+    dir: relativeTo(projectRoot, output.dir) || '.',
+    files: output.files.map((file) => relativeTo(projectRoot, file)),
+    gaps: output.gaps,
+    failures: output.failures,
+  };
 }
 
 /** Most file locations one warning lists; the rest are counted. */
@@ -559,5 +653,22 @@ export function codegenGapWarnings(gaps: readonly CodegenGapRecord[]): string[] 
     ...line('partial', (count) => `${judgments(count)} only partly converted`),
     ...line('unconverted', (count) => `${judgments(count)} not converted; the code throws in place of each`),
   ];
+}
+
+/**
+ * The warning a run prints for the tests whose code stops where they failed:
+ * where in the written files, with the screenshot at the failure, and how
+ * many an earlier run recorded.
+ */
+export function codegenFailureWarnings(failures: readonly CodegenFailureRecord[]): string[] {
+  if (failures.length === 0) return [];
+  const locations = failures
+    .slice(0, MAX_WARNED_LOCATIONS)
+    .map((failure) => `${failure.file}:${String(failure.line)}${failure.screenshot === undefined ? '' : ` (screenshot ${failure.screenshot})`}`);
+  const more = failures.length - locations.length;
+  const carried = failures.filter((failure) => failure.carried === true).length;
+  const earlier = carried === 0 ? '' : `, ${String(carried)} of them from an earlier run`;
+  const tests = failures.length === 1 ? '1 test failed' : `${String(failures.length)} tests failed`;
+  return [`--codegen: ${tests} in the run its code was written from, and the code stops there${earlier}: ${locations.join(', ')}${more > 0 ? `, and ${String(more)} more` : ''}`];
 }
 

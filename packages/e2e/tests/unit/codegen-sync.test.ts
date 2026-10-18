@@ -40,6 +40,7 @@ function record(tests: readonly StoredCodegenTest[], sourceDigest = 'source-1'):
     writtenAt: '2026-10-18T00:00:00.000Z',
     tests,
     gaps: [],
+    failures: [],
   };
 }
 
@@ -64,7 +65,7 @@ describe('planCodegenSync', () => {
     const fresh = stored('b');
     const actions = planCodegenSync({
       records: [record([stored('a'), stored('b', 'old')])],
-      outcomes: outcomes({ b: { kind: 'passed', test: fresh } }),
+      outcomes: outcomes({ b: { kind: 'recorded', test: fresh } }),
       collection: collection({ [FILE]: ['a', 'b'] }),
       sources,
     });
@@ -77,16 +78,20 @@ describe('planCodegenSync', () => {
     expect([...action.fresh]).toEqual(['b']);
   });
 
-  it('drops a test whose failure implicates the app, and keeps one that failed where no model answered', () => {
+  it('writes a test again from a failure that implicates the app, and keeps one that failed where no model answered', () => {
+    const failed = stored('a', 'source-1');
+    const kept = stored('b');
     const actions = planCodegenSync({
-      records: [record([stored('a'), stored('b')])],
-      outcomes: outcomes({ a: { kind: 'dropped' }, b: { kind: 'kept' } }),
+      records: [record([stored('a', 'old'), kept])],
+      outcomes: outcomes({ a: { kind: 'recorded', test: failed }, b: { kind: 'kept' } }),
       collection: collection({ [FILE]: ['a', 'b'] }),
       sources,
     });
     const action = actions[0]!;
     expect(action.kind).toBe('render');
-    if (action.kind === 'render') expect(action.tests.map((test) => test.id)).toEqual(['b']);
+    if (action.kind !== 'render') return;
+    expect(action.tests).toEqual([failed, kept]);
+    expect([...action.fresh]).toEqual(['a']);
   });
 
   it('drops a test the e2e file no longer declares, and orders the rest as the file now does', () => {
@@ -128,9 +133,9 @@ describe('planCodegenSync', () => {
     ]);
   });
 
-  it('writes nothing for a file no test of which ever passed', () => {
+  it('writes nothing for a file none of whose tests ever recorded anything', () => {
     expect(
-      planCodegenSync({ records: [], outcomes: outcomes({ a: { kind: 'dropped' } }), collection: collection({ [FILE]: ['a'] }), sources }),
+      planCodegenSync({ records: [], outcomes: outcomes({ a: { kind: 'kept' } }), collection: collection({ [FILE]: ['a'] }), sources }),
     ).toEqual([]);
   });
 });

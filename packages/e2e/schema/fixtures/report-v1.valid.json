@@ -649,6 +649,19 @@
           "uncovered": ["the task list is not"],
           "screenshot": ".e2e/artifacts/web/tests_example.e2e.ts___signs_out/default/attempt-0/assert-4.png"
         }
+      ],
+      "failures": [
+        {
+          "file": "e2e-gen/tests/example.gen.spec.ts",
+          "line": 41,
+          "source": "tests/example.e2e.ts",
+          "test": "checks out",
+          "api": "agent.assert",
+          "label": "the order is confirmed",
+          "code": "ASSERTION_FAILED",
+          "message": "the page shows the cart, not a confirmation",
+          "screenshot": ".e2e/artifacts/web/tests_example.e2e.ts___checks_out/default/attempt-0/screenshots/002-failure.png"
+        }
       ]
     }
   }

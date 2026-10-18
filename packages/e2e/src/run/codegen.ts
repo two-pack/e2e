@@ -25,6 +25,7 @@ import { collapseText } from '../internal/text.ts';
 import type {
   CodegenJudgment,
   CodegenRecording,
+  CodegenTest,
   CodegenScreenNode,
   CodegenTargetDescriptor,
   EngineCodegen,
@@ -221,7 +222,7 @@ function seenTarget(node: RedactedNode, redact: (text: string) => string): Codeg
  * shown text, whitespace aside). Either one keeps a "gone" check from being
  * written, since it would fail on this very screen.
  */
-function stillShown(target: CodegenTargetDescriptor, observation: Extract<AgentObservation, { kind: 'semantic' }>): boolean {
+export function stillShown(target: CodegenTargetDescriptor, observation: Extract<AgentObservation, { kind: 'semantic' }>): boolean {
   const relocated = relocateDescriptor(target, observation.nodes);
   if (relocated.kind === 'found' || relocated.failure === 'target-ambiguous') return true;
   const name = target.standard?.name ?? target.name;
@@ -288,7 +289,20 @@ export class CodegenLog {
   constructor(
     readonly attemptId: string,
     private readonly engine?: Pick<EngineCodegen, 'locate'>,
+    /** What the test's last recorded run kept, for a judgment to reuse the checks it made then. */
+    private readonly previous?: { readonly test: CodegenTest },
   ) {}
+
+  /**
+   * The judgment the test's last recorded run kept for the `occurrence`-th
+   * step with this api and label, when it kept checks: what a judgment
+   * reuses, rather than asking the judge again, when every check still holds.
+   */
+  previousJudgment(api: string, label: string, occurrence: number): CodegenJudgment | undefined {
+    const matching = (this.previous?.test.steps ?? []).filter((step) => step.api === api && step.label === label);
+    const judgment = matching[occurrence]?.judgment;
+    return judgment === undefined || judgment.checks.length === 0 ? undefined : judgment;
+  }
 
   /**
    * The nodes of a screen the target engine's code would find `target` by,

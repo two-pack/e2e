@@ -477,7 +477,7 @@ describe('playwright codegen from the test source', () => {
   it('throws where the run recorded nothing for a call, so the generated test never passes on nothing', () => {
     const code = convert();
     expect(code).toContain(
-      '      // agent.act: never reached\n      // TODO: no passing run reached this call, so nothing was recorded for it.\n      throw new Error("agent.act(\\"never reached\\") was not recorded by e2e run --codegen");',
+      '      // agent.act: never reached\n      // TODO: the run this code was written from did not reach this call, so nothing was recorded for it.\n      throw new Error("agent.act(\\"never reached\\") was not recorded by e2e run --codegen");',
     );
     const unjudged = convert(SOURCE, [
       { ...CONVERTED_TEST, steps: CONVERTED_TEST.steps.map((recorded) => (recorded.api === 'agent.assert' ? { ...recorded, judgment: { checks: [] } } : recorded)) },
@@ -488,7 +488,7 @@ describe('playwright codegen from the test source', () => {
   it('names a call whose instruction is a variable by the value it has when the generated test runs', () => {
     const source = `import { test } from '@e2e-dev/web';\n\ntest('signs in', async ({ agent }) => {\n  const login = 'log in as admin';\n  await agent.act(login);\n});\n`;
     const code = convert(source, []);
-    expect(code).toContain('  // agent.act(login)\n  // TODO: no passing run reached this call');
+    expect(code).toContain('  // agent.act(login)\n  // TODO: the run this code was written from did not reach this call');
     expect(code).toContain('  throw new Error(`agent.act(${JSON.stringify(login)}) was not recorded by e2e run --codegen`);');
   });
 
@@ -510,6 +510,60 @@ describe('playwright codegen from the test source', () => {
       { title: 'buys a hat', titlePath: ['buys a hat'], steps: [step('agent.assert', 'the cart holds one hat', 4, { judgment: { checks: [{ kind: 'visible', target: { role: 'status', name: 'Cart' } }] } })] },
     ]);
     expect(code).toContain('  await expect(page.getByRole("status", { name: "Cart", exact: true })).toBeVisible();\n  await Promise.resolve().catch(() => undefined);');
+  });
+
+  it('writes a test up to the agent call it failed at, then the failure and a throw, and reports its line', () => {
+    const failure = {
+      code: 'ASSERTION_FAILED',
+      message: 'the cart shows 2 hats',
+      explanation: 'The status reads "2 items".',
+      screenshot: '.e2e/artifacts/web/t/attempt-0/screenshots/002-failure.png',
+    };
+    const failed: CodegenTest = {
+      ...CONVERTED_TEST,
+      steps: CONVERTED_TEST.steps.map((recorded) => (recorded.api === 'agent.assert' ? { api: recorded.api, label: recorded.label, line: recorded.line!, failure } : recorded)),
+    };
+    const rendered = playwrightCodegen(undefined).render({ file: 'tests/checkout.e2e.ts', target: 'web', appUrl: APP_URL, source: SOURCE, tests: [failed] });
+    expect(rendered.code).toContain(
+      [
+        '    // agent.assert: the cart holds one hat',
+        '    // FAILED: in the run this code was written from, the test failed here: ASSERTION_FAILED: the cart shows 2 hats',
+        "    //   The judge's explanation of its verdict (its reasoning, not a checked fact): The status reads \"2 items\".",
+        '    //   Screenshot at the failure: .e2e/artifacts/web/t/attempt-0/screenshots/002-failure.png',
+        '    throw new Error("agent.assert(\\"the cart holds one hat\\") failed in the run this code was written from (ASSERTION_FAILED)");',
+      ].join('\n'),
+    );
+    const header = rendered.code.split('\n').findIndex((line) => line.trim() === '// agent.assert: the cart holds one hat');
+    expect(rendered.failures).toEqual([{ test: 0, line: header + 1 }]);
+
+    // An act that failed part way keeps what it did before the failure.
+    const act: CodegenTest = {
+      ...CONVERTED_TEST,
+      steps: CONVERTED_TEST.steps.map((recorded) =>
+        recorded.label === 'add a hat to the cart' ? { ...recorded, failure: { code: 'STEP_TIMEOUT', message: 'agent.act exceeded its 120000 ms timeout', screenshotWithheld: 'no screenshot was taken at the failure' } } : recorded,
+      ),
+    };
+    expect(convert(SOURCE, [act])).toContain(
+      [
+        '    // agent.act: add a hat to the cart',
+        '    await page.getByRole("button", { name: "Add hat", exact: true }).click();',
+        '    // FAILED: in the run this code was written from, the test failed here: STEP_TIMEOUT: agent.act exceeded its 120000 ms timeout',
+        '    //   No screenshot: no screenshot was taken at the failure',
+      ].join('\n'),
+    );
+  });
+
+  it("puts a failure in the test's own code at the top of the test, where Playwright stops on its own", () => {
+    const failed: CodegenTest = {
+      ...CONVERTED_TEST,
+      failure: { code: 'ASSERTION_FAILED', message: 'expected "Thanks"', api: 'expect.toHaveText', line: 12, screenshot: '.e2e/artifacts/web/t/attempt-0/screenshots/003-failure.png' },
+    };
+    const rendered = playwrightCodegen(undefined).render({ file: 'tests/checkout.e2e.ts', target: 'web', appUrl: APP_URL, source: SOURCE, tests: [failed] });
+    const lines = rendered.code.split('\n');
+    const top = lines.findIndex((line) => line.includes('// FAILED: in the run this code was written from, the test failed at line 12 (expect.toHaveText): ASSERTION_FAILED: expected "Thanks"'));
+    expect(lines[top - 1]).toContain("test('buys a hat', async ({ page }) => {");
+    expect(lines[top + 1]?.trim()).toBe('//   Screenshot at the failure: .e2e/artifacts/web/t/attempt-0/screenshots/003-failure.png');
+    expect(rendered.failures).toEqual([{ test: 0, line: top + 1 }]);
   });
 
   it('falls back to the recorded steps when the source does not parse', () => {

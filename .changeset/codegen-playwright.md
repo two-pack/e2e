@@ -42,6 +42,11 @@ secret was filled, and the comment says why.
 The code is kept in step across runs, one file per e2e file: each test's last
 passing recordings are kept under `<output>/codegen/`, a test the run did not
 refresh (or that failed only because no model answered) keeps its code, one
-that failed otherwise drops it, a test or e2e file the project no longer has
+that failed otherwise is written up to its failure with a `FAILED` comment and
+the screenshot at the failure (`run.codegen.failures`), a test or e2e file the project no longer has
 loses its code, and a file none of whose tests ran is not written. `e2e
 codegen clear` deletes the generated files and their records.
+
+A judgment reuses the checks its test's last recorded run made while every
+one still holds on the screen, so the code stays the same while the page does
+and the judge is not asked again.

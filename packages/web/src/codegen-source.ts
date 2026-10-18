@@ -22,7 +22,7 @@
 
 import { createRequire } from 'node:module';
 import type { CodegenFile, CodegenRendered, CodegenStep, CodegenTest } from 'e2e/engine';
-import { gapComments, gapMarker, literal, oneLine, StatementWriter, takeGapLines } from './codegen-statements.ts';
+import { failureComments, gapComments, gapMarker, literal, oneLine, StatementWriter, takeGapLines } from './codegen-statements.ts';
 
 /** An ESTree node as `oxc-parser` returns it, offsets in UTF-16 code units. */
 interface AstNode {
@@ -125,8 +125,8 @@ function parse(fileName: string, source: string): AstNode | undefined {
 class SourceConverter {
   private readonly edits: Edit[] = [];
   private readonly sites: AgentSite[] = [];
-  /** The judgment steps with a gap the code marks, by marker index. */
-  private readonly gaps: { readonly test: number; readonly step: number }[] = [];
+  /** The judgment steps with a gap, and the tests with a failure, the code marks, by marker index. */
+  private readonly marks: { readonly kind: 'gap' | 'failure'; readonly test: number; readonly step: number }[] = [];
   private readonly writer: StatementWriter;
   private readonly lineStarts: number[];
   /** Local names of what the file imported from e2e, by the name e2e exports it under. */
@@ -158,12 +158,14 @@ class SourceConverter {
     this.edits.push({ start: 0, end: 0, text: `${top.join('\n')}\n` });
     this.edits.push({ start: this.lastImportEnd, end: this.lastImportEnd, text: `${this.lastImportEnd === 0 ? '' : '\n'}\n${helpers.join('\n')}\n` });
     const { code, lines } = takeGapLines(`${applyEdits(this.source, this.edits).replace(/\n{3,}/gu, '\n\n').trimEnd()}\n`);
+    const marked = this.marks.flatMap(({ kind, test, step }, index) => {
+      const line = lines.get(index);
+      return line === undefined ? [] : [{ kind, test, step, line }];
+    });
     return {
       code,
-      gaps: this.gaps.flatMap((gap, index) => {
-        const line = lines.get(index);
-        return line === undefined ? [] : [{ ...gap, line }];
-      }),
+      gaps: marked.filter((mark) => mark.kind === 'gap').map(({ test, step, line }) => ({ test, step, line })),
+      failures: marked.filter((mark) => mark.kind === 'failure').map(({ test, line }) => ({ test, line })),
     };
   }
 
@@ -352,6 +354,7 @@ class SourceConverter {
     const describes = kind === 'describe' && title !== undefined ? [...context.describes, title] : context.describes;
     const test = kind === 'test' || kind === 'setup' ? this.testFor([...context.describes, title ?? '']) : context.test;
     const callback = args.at(-1);
+    if ((kind === 'test' || kind === 'setup') && test?.failure !== undefined && callback !== undefined && isFunction(callback)) this.noteTestFailure(test, callback);
     const next = [...ancestors, call];
     for (const arg of args) {
       if (arg === callback && isFunction(arg)) {
@@ -366,6 +369,24 @@ class SourceConverter {
         this.walk(arg, next, context);
       }
     }
+  }
+
+  /**
+   * Puts a test's failure at the top of its body when no agent call carries
+   * it: the test's own code failed (an `expect`, a locator action) or threw,
+   * and Playwright stops at the same line, so only the comment is added.
+   */
+  private noteTestFailure(test: CodegenTest, callback: AstNode): void {
+    const failure = test.failure!;
+    const body = callback['body'] as AstNode | undefined;
+    const first = body?.type === 'BlockStatement' ? ((body['body'] as AstNode[] | undefined) ?? [])[0] : undefined;
+    if (first === undefined) return;
+    const index = this.mark('failure', this.file.tests.indexOf(test), -1);
+    const where = failure.line === undefined ? (failure.api ?? 'the test') : `line ${String(failure.line)}${failure.api === undefined ? '' : ` (${failure.api}${failure.label === undefined || failure.label === '' ? '' : ` ${failure.label}`})`}`;
+    const lines = failureComments(failure, where);
+    if (index !== undefined) lines[0] = `${gapMarker(index)}${lines[0]!}`;
+    const indent = this.indentAt(first.start);
+    this.edits.push({ start: first.start, end: first.start, text: lines.map((line) => `${line}\n${indent}`).join('') });
   }
 
   /** The fixtures a callback destructures, by local name; its pattern becomes `{ page }`. */
@@ -462,7 +483,15 @@ class SourceConverter {
     let value = 'undefined';
     let marked: number | undefined;
     if (step === undefined) {
-      lines = [`// TODO: no passing run reached this call, so nothing was recorded for it.`, missing('was not recorded by e2e run --codegen')];
+      lines = [`// TODO: the run this code was written from did not reach this call, so nothing was recorded for it.`, missing('was not recorded by e2e run --codegen')];
+    } else if (step.failure !== undefined) {
+      // The run failed here: what the step did before it failed, then the failure, and the code stops.
+      lines = [
+        ...(step.recording?.actions ?? []).flatMap((action) => this.writer.action(action)),
+        ...failureComments(step.failure),
+        missing(`failed in the run this code was written from (${step.failure.code})`),
+      ];
+      marked = this.markStep('failure', step);
     } else if (site.api === 'agent.act') {
       const recording = step.recording;
       lines =
@@ -486,7 +515,7 @@ class SourceConverter {
               missing('has no recorded check; write it as an expect()'),
             ]
           : [...(gap === undefined ? [] : gapComments(gap, true)), ...checks.map((check) => this.writer.check(check, timeout))];
-      if (gap !== undefined) marked = this.markGap(step);
+      if (gap !== undefined) marked = this.markStep('gap', step);
       if (site.api === 'agent.extract') {
         if (step.judgment?.value === undefined) lines.push(missing('returned a value that was not recorded'));
         else value = literal(step.judgment.value);
@@ -507,15 +536,18 @@ class SourceConverter {
     }
   }
 
-  /** Notes a judgment step with a gap, once, and returns the marker index its header carries. */
-  private markGap(step: CodegenStep): number | undefined {
+  /** Notes a judgment step with a gap, or a step a test failed at, once, and returns the marker index its header carries. */
+  private markStep(kind: 'gap' | 'failure', step: CodegenStep): number | undefined {
     const test = this.file.tests.findIndex((candidate) => candidate.steps.includes(step));
     if (test === -1) return undefined;
-    const index = this.file.tests[test]!.steps.indexOf(step);
-    // A step a loop or a helper reaches from several call sites is reported where the first one writes it.
-    if (this.gaps.some((gap) => gap.test === test && gap.step === index)) return undefined;
-    this.gaps.push({ test, step: index });
-    return this.gaps.length - 1;
+    return this.mark(kind, test, this.file.tests[test]!.steps.indexOf(step));
+  }
+
+  /** Notes one mark once; a step a loop or a helper reaches from several call sites is reported where the first one writes it. */
+  private mark(kind: 'gap' | 'failure', test: number, step: number): number | undefined {
+    if (this.marks.some((mark) => mark.kind === kind && mark.test === test && mark.step === step)) return undefined;
+    this.marks.push({ kind, test, step });
+    return this.marks.length - 1;
   }
 
   /** The comment, imports, and settings the converted file opens with. */

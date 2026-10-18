@@ -82,7 +82,7 @@ describe('defineEngine', () => {
   });
 
   it('takes a codegen declaration of an extension, a render function, and an optional locate, and nothing else', () => {
-    const render = (file: { readonly file: string }): { code: string; gaps: [] } => ({ code: `// ${file.file}`, gaps: [] });
+    const render = (file: { readonly file: string }): { code: string; gaps: []; failures: [] } => ({ code: `// ${file.file}`, gaps: [], failures: [] });
     const handle = defineEngine(observingEngine({ codegen: { extension: '.spec.ts', render } }));
     expect(handle.codegen?.extension).toBe('.spec.ts');
     expect(handle.codegen?.render({ file: 'a.e2e.ts', target: 'web', tests: [] }).code).toBe('// a.e2e.ts');

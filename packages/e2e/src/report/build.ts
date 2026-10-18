@@ -132,6 +132,30 @@ export interface ReportCodegen {
   readonly dir: string;
   readonly files: readonly string[];
   readonly gaps: readonly ReportCodegenGap[];
+  readonly failures: readonly ReportCodegenFailure[];
+}
+
+/** One test whose generated code stops where it failed, in the run the code was written from. */
+export interface ReportCodegenFailure {
+  /** The generated file, project-root relative with `/` separators. */
+  readonly file: string;
+  /** The one-based line of the file the failure's comment starts at. */
+  readonly line: number;
+  /** The e2e test file, project-root relative. */
+  readonly source: string;
+  readonly test: string;
+  /** The agent step the test failed at, when one did. */
+  readonly api?: string;
+  readonly label?: string;
+  /** The error code and message, redacted. */
+  readonly code: string;
+  readonly message: string;
+  /** The screenshot taken at the failure, in the run's artifacts, project-root relative. */
+  readonly screenshot?: string;
+  /** Why there is no screenshot. */
+  readonly screenshotWithheld?: string;
+  /** True when the test did not run in this run: the failure is what an earlier run recorded. */
+  readonly carried?: boolean;
 }
 
 /**
