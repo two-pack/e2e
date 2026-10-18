@@ -178,9 +178,13 @@ the run writes code. What showed only in the middle of a step is not seen:
   counts it zero anywhere on the page, found the way the rest of the code
   finds a node, so a list row a step added and a later step removed is
   `await expect(page.getByRole("listitem").filter({ hasText: /^\s*Buy\s*milk\s*$/u })).toHaveCount(0);`.
-  Only an element with something of its own to be found by (a test id, a
-  name, the text it shows, a placeholder) is offered: an unnamed list found by
-  its role alone would make the check fail on any page with another list.
+  An element with nothing of its own to be found by (a test id, a name, the
+  text it shows, a placeholder), such as an unnamed list, is offered by its
+  role alone, and only while no element of that role is on screen:
+  `await expect(page.getByRole("list")).toHaveCount(0);` says no list is
+  shown, so it also fails on a later page that shows an unrelated list. The
+  judge is told to use it only where the instruction says that much. An
+  element the engine has no locator for by its role is not offered.
 - **A text is absent.** Kept only when the instruction itself names the text
   as missing and an earlier screen showed it. A word the instruction uses for
   what it means ("the task list") is seldom what the app shows, and checking

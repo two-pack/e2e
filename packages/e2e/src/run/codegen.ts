@@ -153,7 +153,7 @@ export class SeenScreens {
   private readonly texts = new Set<string>();
   private screens = 0;
 
-  /** Remembers one screen: every element a script can find by something of its own, and every text shown. */
+  /** Remembers one screen: every element with a role, and every text shown. */
   saw(observation: AgentObservation, redact: (text: string) => string): void {
     if (observation.kind !== 'semantic') return;
     const screen = (this.screens += 1);
@@ -179,12 +179,15 @@ export class SeenScreens {
   /**
    * The elements earlier screens showed that `observation` does not, at most
    * `limit`: the newest screen's first, in the order that screen listed them.
-   * `shown` says whether the code would still find one on it.
+   * `locate` gives the nodes of it the code would find one by, undefined when
+   * the engine cannot tell: a node found keeps an element out, and so does an
+   * element known by its role alone that the engine cannot look for, since
+   * its code would find nothing whatever the screen shows.
    */
   goneFrom(
     observation: Extract<AgentObservation, { kind: 'semantic' }>,
     limit: number,
-    shown: (target: CodegenTargetDescriptor) => boolean = () => false,
+    locate: (target: CodegenTargetDescriptor) => readonly string[] | undefined = () => undefined,
   ): CodegenTargetDescriptor[] {
     const ordered = [...this.elements.values()]
       .map((entry, index) => ({ ...entry, index }))
@@ -192,7 +195,10 @@ export class SeenScreens {
     const gone: CodegenTargetDescriptor[] = [];
     for (const { target } of ordered) {
       if (gone.length >= limit) break;
-      if (!stillShown(target, observation) && !shown(target)) gone.push(target);
+      if (stillShown(target, observation)) continue;
+      const found = locate(target);
+      if (found === undefined ? roleOnly(target) : found.length > 0) continue;
+      gone.push(target);
     }
     return gone;
   }
@@ -208,10 +214,11 @@ function remember<Value>(store: Map<string, Value> | Set<string>, key: string, v
 
 /**
  * A node as a script finds it anywhere on a screen: its descriptor with what
- * it shows, when the node has a role and something of its own to be found by
- * (a test id, a name, the text it shows, a placeholder). A role alone, an
- * unnamed list, finds every node of the role, so its absence says nothing
- * about the one that was there. Undefined, too, for a node that names a secret.
+ * it shows, when the node has a role. A node with nothing of its own to be
+ * found by (a test id, a name, the text it shows, a placeholder), an unnamed
+ * list, is kept by its role alone: the code finds every node of the role, so
+ * none of them on a screen means the one that was there is gone too.
+ * Undefined for a node that names a secret.
  */
 function seenTarget(node: RedactedNode, redact: (text: string) => string): CodegenTargetDescriptor | undefined {
   const described = describeTarget(node);
@@ -220,9 +227,12 @@ function seenTarget(node: RedactedNode, redact: (text: string) => string): Codeg
   const { within: _within, position: _position, text, ...rest } = described;
   const descriptor = isEditable(node) || node.value !== undefined || text === undefined ? rest : { ...rest, text };
   const target: CodegenTargetDescriptor = { ...descriptor, ...codegenExtrasOf(node, redact) };
-  const specific = target.testId ?? target.name ?? target.shownText ?? target.placeholder;
-  if (specific === undefined) return undefined;
   return Object.values(target).some((value) => typeof value === 'string' && carriesSecretMarker(value)) ? undefined : target;
+}
+
+/** Whether a script finds `target` by its role alone, with nothing of its own to tell it from the other nodes of the role. */
+function roleOnly(target: CodegenTargetDescriptor): boolean {
+  return target.testId === undefined && target.name === undefined && target.shownText === undefined && target.placeholder === undefined;
 }
 
 /**

@@ -1965,7 +1965,9 @@ in `gaps`, which the runner prints as a warning and records under
 runner asks `locate`, when the engine has one, which nodes of the screen the
 locator `render` would write for a check's node finds: it keeps a check only
 when that is the node alone (or its twins, for a node with a `position`),
-and offers an element as gone only when it finds nothing. A target whose engine declares no `codegen` gets
+and offers an element as gone only when it finds nothing. An element an
+earlier screen showed with nothing of its own to be found by, known by its
+role alone, is offered only when `locate` answers for it. A target whose engine declares no `codegen` gets
 a notice. A `render` that throws is a `REPORT_WRITE_FAILED` run error.
 
 ```ts

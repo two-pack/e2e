@@ -51,3 +51,6 @@ A judgment reuses the checks its test's last recorded run made while every
 one still holds on the screen, so the code stays the same while the page does
 and the judge is not asked again. Checks that proved the judgment only in
 part are never reused: the judge is asked again, so the gap can close.
+An element an earlier screen showed with nothing of its own to be found by,
+such as an unnamed list, can be checked gone by its role alone, while no
+element of that role is on screen.

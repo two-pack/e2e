@@ -49,6 +49,12 @@ test('remembers what a screen step went through', async ({ app, agent }) => {
   await agent.assert('the Increment button was replaced, and nothing is broken');
 });
 
+test('leaves the list behind', async ({ app, agent }) => {
+  await app.open('/delayed');
+  await app.open('/about');
+  await agent.assert('the list is not shown');
+});
+
 test('shows the sign-in card', async ({ app, agent }) => {
   await app.open('/sign-in-card');
   await agent.assert('the sign-in card is shown');
@@ -124,6 +130,11 @@ function judge(call: FakeCall): unknown {
   if (call.instruction.includes('replaced')) {
     const earlier = /^(p\d+) button "Increment"/mu.exec(call.prompt)?.[1] ?? null;
     return { checks: [{ kind: 'gone', node: earlier, text: null, covers: 'the Increment button was replaced' }], uncovered: ['nothing is broken'] };
+  }
+  if (call.instruction.includes('the list is not shown')) {
+    // The list had no name: the question lists it by its role alone.
+    const earlier = /^(p\d+) list$/mu.exec(call.prompt)?.[1] ?? null;
+    return { checks: [{ kind: 'gone', node: earlier, text: null, covers: 'the list is not shown' }], uncovered: [] };
   }
   if (call.instruction.includes('sign-in card')) {
     // The title reads "Login" like the button does: a script can find only the button by it.
@@ -313,6 +324,17 @@ describe('--codegen on the in-process transport', () => {
       ].join('\n'),
     );
     expect(code).toMatch(/ {2}\/\/ {3}Screenshot of the screen it passed on: \.e2e\/results\/\S+\.png\n {2}await expect\(page\.getByRole\("button", \{ name: "Increment", exact: true \}\)\)\.toHaveCount\(0\);/u);
+  });
+
+  it('checks that an unnamed list an earlier screen showed is gone, by its role alone', () => {
+    expect(resultByTitle(outcome, 'leaves the list behind').status).toBe('passed');
+    const code = readFileSync(path.join(project.dir, SPEC), 'utf8');
+    expect(code).toContain(
+      [
+        '  // agent.assert: the list is not shown',
+        '  await expect(page.getByRole("list")).toHaveCount(0);',
+      ].join('\n'),
+    );
   });
 
   it('keeps a check only on a node the code finds alone, saying why it dropped the other', () => {

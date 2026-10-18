@@ -50,6 +50,7 @@ const CHECKS_REQUEST = [
   '- "count": exactly text (a number) nodes with node\'s role are on screen. "order": the nodes with node\'s role appear in the order the screen shows them.',
   '- "absent": no node on screen shows text; only for words the instruction itself says are missing, gone, or not shown.',
   '- "gone": node, an element listed under <shown-earlier>, is no longer on screen; for what the instruction says is missing, gone, or not shown.',
+  '  An element listed by its role alone, such as "p8 list", stands for every node of that role: "gone" on it says none is on screen, so use it only where the instruction says that much.',
   '- "url": the location is exactly text, as the observation reports it.',
   'Cover every part of the instruction: a number of items is a "count", an order is an "order", an empty field is a "value" with text "".',
   'node is the id of a node in the observation, such as "n12", or of an element under <shown-earlier>, such as "p3"; null for "absent" and "url". text is null where the kind takes none.',
@@ -314,10 +315,10 @@ async function deriveCodegenChecks(runtime: AgentContext, codegen: CodegenLog, r
     if (observation.kind !== 'semantic') return undefined;
     // A screen not listed whole may hold what looks gone; nothing earlier is offered then.
     const locate = (target: CodegenTargetDescriptor): readonly string[] | undefined => codegen.locate(target, observation);
-    // An element the code would still find on this screen is not gone, whatever e2e's own matching says.
-    const stillFound = (target: CodegenTargetDescriptor): boolean => (locate(target)?.length ?? 0) > 0;
+    // An element the code would still find on this screen is not gone, whatever e2e's own matching says,
+    // and one known by its role alone is offered only where the engine can look for it.
     const earlier = new Map(
-      (observation.truncated ? [] : seen.goneFrom(observation, MAX_EARLIER_ELEMENTS, stillFound)).map(
+      (observation.truncated ? [] : seen.goneFrom(observation, MAX_EARLIER_ELEMENTS, locate)).map(
         (target, index) => [`p${String(index + 1)}`, target] as const,
       ),
     );
