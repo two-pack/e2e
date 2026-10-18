@@ -144,6 +144,8 @@ describe('telemetry events', () => {
       model_cached_tokens: null,
       estimated_cost_usd: 0.01,
       cost_source: 'provider',
+      codegen_model_calls: 0,
+      codegen_model_tokens: 0,
       artifact_bytes: 4096,
       errors: 1,
       primary_error_code: 'APP_UNREACHABLE',
@@ -301,6 +303,16 @@ describe('telemetry events', () => {
       model_calls_extract: 0,
       model_calls_waitfor: 0,
     });
+  });
+
+  it("counts --codegen's calls for judgments' checks apart from the model totals", () => {
+    const model = sampleReport().run.results[0]!.attempts[0]!.steps[0]!.model!;
+    const base = reportWithAttempts({ steps: [reportStep({ kind: 'agent', api: 'agent.assert', model: { ...model, calls: 1 } })] });
+    const report = {
+      ...base,
+      run: { ...base.run, codegen: { dir: 'e2e-gen', files: [], gaps: [], failures: [], usage: { calls: 2, inputTokens: 300, outputTokens: 40 } } },
+    };
+    expect(runCompletedEvent(report, RUN).properties).toMatchObject({ model_calls: 1, model_calls_assert: 1, codegen_model_calls: 2, codegen_model_tokens: 340 });
   });
 
   it("counts the agent's actions by the runner's names, a project's tools together, and nothing on other steps", () => {

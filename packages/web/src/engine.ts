@@ -6,6 +6,7 @@
  * fixture the way a device engine contributes `device`.
  */
 
+import { playwrightCodegen } from './codegen.ts';
 import type { BrowserContext, Page } from 'playwright-core';
 import {
   ConfigurationError,
@@ -128,6 +129,7 @@ export function web(options: WebOptions = {}): EngineHandle {
       press: (key, operation) => surface.pressKey(key, operation),
     },
     validateApp,
+    codegen: playwrightCodegen(options.testIdAttribute),
     ...(isSecret(options.basicAuth?.password) ? { secrets: [options.basicAuth.password] } : {}),
     session: {
       open: (url, operation) => surface.open(url, operation),

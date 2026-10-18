@@ -52,6 +52,7 @@ npx e2e telemetry [disable|enable] # anonymous usage telemetry: status or switch
 | `--pass-with-no-tests` | Exit 0, not `NO_TESTS`, when nothing matches. |
 | `--debug` | Phase timings and an agent step table on stderr; transcripts as artifacts. |
 | `--ai-trace` | Every model call, to `<output>/ai-trace.json`. |
+| `--codegen` | Each e2e file as the engine's own test code, one file under `codegen.outDir` (`e2e-gen/`): on the web engine `<file>.gen.spec.ts`, the test converted to Playwright Test, `agent.act` as the recorded actions, `assert`/`waitFor` as the `expect`s that proved them, `extract` as its value. Kept in step across runs: a test not run keeps its code; one that fails is written up to its failure with a `FAILED` comment and the screenshot; a judgment reuses its last checks while they still hold, if they proved all of it, else costs one more judge call, counted on the `Code` row and in `run.codegen.usage`, not in the `AI` row. A check is kept only on an element its locator finds alone. A judgment its checks prove only in part gets a `NOTE` comment with its screenshot, a closing `⚠` warning with its line, and an entry in `run.codegen.gaps`. `e2e codegen clear` deletes the code and its records. |
 | `--trace [mode]`, `--video [mode]` | Which tests keep a trace page (`<output>/results/<test>/trace.md`), or which attempts record a video (WebM on browsers, MP4 on devices), over the config and every target: bare is `on` (`--trace` then pages every test, passing ones too); `--trace off` writes none; `retain-on-failure` keeps only failures; `on-first-retry` keeps first retries, `on-all-retries` every retry. A test's own `trace` or `video` still wins; targets whose engine cannot record video are skipped with a notice. Both are greedy: write `--video=<mode>` or put test files first. The failure recap names the trace page and the video. |
 
 ```bash
@@ -110,7 +111,7 @@ its own tools.
 ## Output
 
 `<output>` (`.e2e` by default) holds `report.json`, `junit.xml`,
-`summary.md`, `ai-trace.json`, `sessions/`, and `results/`, one directory
+`summary.md`, `ai-trace.json`, `codegen/` (what `--codegen` keeps between runs), `sessions/`, and `results/`, one directory
 per test with its `trace.md` and an `attempt-<n>/` per attempt
 (screenshots, videos, `--debug` transcripts, downloads).
 `results/` is cleared once a run's tests start; a run stopping before
@@ -122,7 +123,7 @@ hosted service's video by URL.
   Tests` section (error, code, failing line, code frame), then the
   summary rows `Test Files`, `Tests`, `AI`, `Cache` (when the replay cache
   ran), `Repeats` (with `--repeat-each`), `Errors`, `Start at`, `Duration`,
-  `Traces` (when a page was written), `AI trace` (with `--ai-trace`). Past a minute `Duration`
+  `Traces` (when a page was written), `AI trace` (with `--ai-trace`), `Code` (with `--codegen`). Past a minute `Duration`
   repeats as minutes and seconds, setup time split out as `startup` in the
   same parenthetical (`682.97s (11m 23s, startup 43.00s)`).
 - `report.json`, for scripts rather than reading (`jq`, CI tools; a reader

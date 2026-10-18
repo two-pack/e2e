@@ -55,6 +55,7 @@
     "test:unit": "vitest run tests/unit"
   },
   "dependencies": {
+    "oxc-parser": "0.152.0",
     "playwright-core": "1.64.0"
   },
   "peerDependencies": {

@@ -117,6 +117,8 @@ export type RunEventFact =
       readonly type: 'notice';
       readonly target: string;
       readonly message: string;
+      /** `warning` for something the run produced that falls short of what was asked; absent for information. */
+      readonly level?: 'warning';
     }
   | {
       /**
@@ -231,6 +233,12 @@ export type RunEventFact =
        * result id, as a path from the project root.
        */
       readonly traces?: Readonly<Record<string, string>>;
+      /**
+       * Where `--codegen` wrote the engines' code, and how many files, once
+       * they exist; `modelCalls`, the calls it made for judgments' checks,
+       * when it made any (`run.codegen.usage` in the report).
+       */
+      readonly codegen?: { readonly dir: string; readonly files: number; readonly modelCalls?: number };
     };
 
 /** Envelope stamped by the emitter: monotonic order and wall-clock time. */

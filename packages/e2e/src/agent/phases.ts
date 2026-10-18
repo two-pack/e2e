@@ -59,6 +59,8 @@ export interface PhaseSpec {
   readonly kind: StepEvent['kind'];
   readonly phase: 'agent.observe' | 'agent.model' | 'agent.action' | 'agent.cache';
   readonly name?: string;
+  /** The mark the phase's event carries, on success and failure alike. */
+  readonly purpose?: StepEvent['purpose'];
 }
 
 /** The live activity a phase announces as it begins; a cache probe announces nothing. */
@@ -95,6 +97,7 @@ export async function instrumentPhase<Value>(
       durationMs: Date.now() - startedMs,
       status: 'passed',
       ...(spec.name === undefined ? {} : { name: spec.name }),
+      ...(spec.purpose === undefined ? {} : { purpose: spec.purpose }),
       ...eventDetail,
     });
     return value;
@@ -106,6 +109,7 @@ export async function instrumentPhase<Value>(
       durationMs: Date.now() - startedMs,
       status: error.code === 'CANCELLED' ? 'cancelled' : 'failed',
       ...(spec.name === undefined ? {} : { name: spec.name }),
+      ...(spec.purpose === undefined ? {} : { purpose: spec.purpose }),
       code: phaseErrorCode(cause),
       // What went wrong, not only its code: the tool result the model read said it too.
       ...(error.message.trim() === '' ? {} : { detail: `${spec.name === undefined ? '' : `${spec.name}: `}${error.message.split('\n')[0]!.trim()}` }),

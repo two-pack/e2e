@@ -1,0 +1,43 @@
+{
+  "checks": [
+    {
+      "kind": "text",
+      "node": "n12",
+      "text": "Saved profile for Ada Lovelace",
+      "covers": "the profile is saved"
+    },
+    {
+      "kind": "checked",
+      "node": "n7",
+      "text": null,
+      "covers": "the newsletter box is checked"
+    },
+    {
+      "kind": "count",
+      "node": "n20",
+      "text": "3",
+      "covers": "three addresses"
+    },
+    {
+      "kind": "order",
+      "node": "n20",
+      "text": null,
+      "covers": null
+    },
+    {
+      "kind": "gone",
+      "node": "p2",
+      "text": null,
+      "covers": "the draft banner is gone"
+    },
+    {
+      "kind": "url",
+      "node": null,
+      "text": "/dashboard",
+      "covers": "on the dashboard"
+    }
+  ],
+  "uncovered": [
+    "the save took under a second"
+  ]
+}

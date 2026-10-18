@@ -148,6 +148,16 @@ line2  </textarea>
   <a href="/">Home</a>
 </body>
 </html>`),
+  '/sign-in-card': constant(`<!doctype html>
+<html>
+<head><title>Sign in card</title></head>
+<body>
+  <div>Login</div>
+  <label for="user">Username</label>
+  <input id="user" />
+  <button>Login</button>
+</body>
+</html>`),
   '/storage': constant(`<!doctype html>
 <html>
 <head><title>Storage</title></head>

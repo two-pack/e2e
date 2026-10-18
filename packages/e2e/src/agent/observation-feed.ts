@@ -346,6 +346,7 @@ export class ObservationFeed {
     else this.recent.push(observation);
     if (this.recent.length > MAX_RECENT_OBSERVATIONS) this.recent.shift();
     if (observation.kind === 'semantic') this.noteShown(observation);
+    this.runtime.codegen?.seen.saw(observation, this.runtime.redact);
     const metrics = this.accounting.metrics;
     metrics.observationBytes = Math.max(metrics.observationBytes, observation.bytes);
   }

@@ -62,8 +62,10 @@ import type {
   ViewportPoint,
   ViewportSize,
 } from './contract.ts';
+import type { EngineCodegen } from './codegen.ts';
 
 export type * from './contract.ts';
+export type * from './codegen.ts';
 export {
   ENGINE_ERROR_CODES,
   ENGINE_SPI_VERSION,
@@ -792,6 +794,8 @@ export interface Engine {
   validateApp?(app: EngineAppDeclaration, info: EngineAppCheckInfo): void;
   /** Steering hooks: open, back, restart, reset. */
   readonly session?: EngineSession;
+  /** Turns a run's recorded agent steps into this engine's own test code; see `EngineCodegen`. */
+  readonly codegen?: EngineCodegen;
   /**
    * Once per run and target, in the runner process, before any worker starts
    * and outside every launch budget. Provision what the engine needs on this

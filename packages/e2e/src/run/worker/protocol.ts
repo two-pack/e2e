@@ -11,6 +11,7 @@ import type { TestIdentity } from '../../collect/collect.ts';
 import type { ResolvedTestOptions, SkipInfo } from '../../collect/select.ts';
 import type { CliOverrides, PortAssignments, ResolvedTarget } from '../../config/resolve.ts';
 import type { AiTraceSnapshot } from '../../internal/ai-trace.ts';
+import type { CodegenAttempt } from '../codegen.ts';
 import type { DebugSnapshot } from '../../internal/debug.ts';
 import type { SerializedError } from '../../internal/errors.ts';
 import type { AttemptRecord, ResultRecord, RunError, SerialGroupRecord, SerialMemberRecord, WireResultRecord } from '../records.ts';
@@ -227,6 +228,8 @@ export interface PongMessage {
 export interface ResultMessage {
   readonly type: 'result';
   readonly result: WireResultRecord;
+  /** The last attempt's `--codegen` recordings; absent unless the run asked for code. */
+  readonly codegen?: CodegenAttempt;
 }
 
 export interface SerialGroupMessage {

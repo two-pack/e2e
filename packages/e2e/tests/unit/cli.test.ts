@@ -674,6 +674,7 @@ describe('e2e --version and --help', () => {
       '--cache-dir',
       '--debug',
       '--ai-trace',
+      '--codegen',
       '--trace',
       '--video',
       '-h',

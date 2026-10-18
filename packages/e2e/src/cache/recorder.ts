@@ -69,6 +69,16 @@ export class TraceRecorder {
     return this.actions.length;
   }
 
+  /** The actions recorded so far, gaps included, in order. */
+  get recorded(): readonly RecordedAction[] {
+    return this.actions;
+  }
+
+  /** True once an action could not be kept whole or overflowed the cap; see `ActionTrace.truncated`. */
+  get incomplete(): boolean {
+    return this.truncated;
+  }
+
   /** When the last action or gap was recorded; undefined before the first. */
   get lastActionAtMs(): number | undefined {
     return this.lastActionAt;

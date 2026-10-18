@@ -159,6 +159,30 @@ describe.each(schemas)('%s schema', (name) => {
       expect(validate(report)).toBe(true);
     });
 
+    it('records what --codegen wrote, and each judgment its code does not prove whole as partial or unconverted', () => {
+      const report = readJson('fixtures', 'report-v1.valid.json') as { run: { codegen?: { gaps: Record<string, unknown>[] } & Record<string, unknown> } };
+      const codegen = report.run.codegen!;
+      const gap = codegen.gaps[0]!;
+      for (const bad of [{ kind: 'half' }, { line: 0 }, { uncovered: undefined }, { extra: true }, { screenshot: '' }, { screenshotWithheld: 3 }, { carried: false }]) {
+        report.run.codegen = { ...codegen, gaps: [{ ...gap, ...bad }] };
+        expect(validate(report), JSON.stringify(bad)).toBe(false);
+      }
+      const { screenshot: _screenshot, ...withoutScreenshot } = gap;
+      report.run.codegen = { ...codegen, gaps: [{ ...withoutScreenshot, kind: 'unconverted', uncovered: [], screenshotWithheld: 'the engine took no screenshot' }] };
+      expect(validate(report)).toBe(true);
+      report.run.codegen = { ...codegen, gaps: [{ ...gap, carried: true }] };
+      expect(validate(report)).toBe(true);
+      const failure = (codegen['failures'] as Record<string, unknown>[])[0]!;
+      for (const bad of [{ code: undefined }, { line: 0 }, { carried: false }, { extra: true }]) {
+        report.run.codegen = { ...codegen, failures: [{ ...failure, ...bad }] };
+        expect(validate(report), JSON.stringify(bad)).toBe(false);
+      }
+      report.run.codegen = { ...codegen, failures: undefined };
+      expect(validate(report)).toBe(false);
+      delete report.run.codegen;
+      expect(validate(report)).toBe(true);
+    });
+
     it('requires judgment evidence after a model call, while allowing capture failures before one', () => {
       const report = readJson('fixtures', 'report-v1.valid.json') as {
         run: { results: { attempts: { steps: { api: string; status: string; metrics: { modelCalls: number }; observationRevision?: string; explanation?: string }[] }[] }[] };

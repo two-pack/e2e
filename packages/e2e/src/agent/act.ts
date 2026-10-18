@@ -40,6 +40,7 @@ import type { ObservedScreen } from './replay.ts';
 import { appLocation } from '../cache/route.ts';
 import { OperationQueue } from './operation-queue.ts';
 import { StepAccounting } from './step-accounting.ts';
+import { recordCodegenJudgment } from './codegen-checks.ts';
 import { failedStepOutcome, StepTraceSession, type StepCacheHost, type StepOutcome } from './step-cache.ts';
 import type { ParamTemplate } from '../cache/template.ts';
 
@@ -167,7 +168,20 @@ export async function dispatchAgentStep(
         throw dispatch.settleThrown(error);
       }
       const evidence = await dispatch.captureEvidence();
-      dispatch.settle(validateVerdict(verdict, agent.executor.name), evidence);
+      const validated = validateVerdict(verdict, agent.executor.name);
+      dispatch.settle(validated, evidence);
+      if (spec.kind === 'assert') {
+        // The executor judged with its own look at the screen; the checks are
+        // derived from a fresh one, taken once the verdict passed.
+        await recordCodegenJudgment(runtime, {
+          api: spec.api,
+          agent: raw.agent,
+          instruction: spec.instruction,
+          observation: undefined,
+          explanation: validated.summary,
+          timeoutMs: agent.config.judgmentTimeout,
+        });
+      }
       await dispatch.conclude('passed');
       return dispatch.result();
     } catch (cause) {
@@ -229,17 +243,23 @@ class ActDispatch {
       maxInputTokens: agent.config.maxInputTokens,
       instructionBytes: tokenUpperBound(spec.instruction),
     });
+    // The dispatch always runs inside a recorded step (`dispatchAgentStep`
+    // opens one); the index names the step to the executor and to the trace cache.
+    const stepIndex = runtime.steps.currentStepIndex;
+    const stepId = runtime.steps.currentStepId;
+    if (stepIndex === undefined || stepId === undefined) throw new Error('agent step dispatched outside a recorded step');
+    this.stepIndex = stepIndex;
+    // `--codegen` records what an act step did, cached or not: the code is
+    // written from the actions, whoever chose them.
+    const codegen =
+      spec.kind === 'act' ? runtime.codegen?.open(stepId, { redact: runtime.redact, redactCut: runtime.redactCut }) : undefined;
     this.dispatcher = new ActionDispatcher(runtime, this.accounting, this.feed, queue, {
       instruction: spec.instruction,
       params: spec.params,
       secrets: spec.secrets,
       trace: () => this.stepCache,
+      codegen,
     });
-    // The dispatch always runs inside a recorded step (`dispatchAgentStep`
-    // opens one); the index names the step to the executor and to the trace cache.
-    const stepIndex = runtime.steps.currentStepIndex;
-    if (stepIndex === undefined) throw new Error('agent step dispatched outside a recorded step');
-    this.stepIndex = stepIndex;
     // Only act steps are cacheable: an assert must not change state, so its
     // trace would be empty — nothing to replay, nothing worth a read. An
     // executor that declared `cache: 'off'` sees every step itself.

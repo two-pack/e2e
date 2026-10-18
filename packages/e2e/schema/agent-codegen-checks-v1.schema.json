@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://e2e.dev/schema/agent-codegen-checks-v1.schema.json",
+  "title": "e2e agent-codegen-checks-1 response",
+  "description": "What the judge answers, in an e2e run --codegen, when asked which facts on the screen a passed judgment rested on: the checks, each with the part of the instruction it proves, and the parts it could not turn into a check. The runner keeps only the checks the same observation bears out.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "checks",
+    "uncovered"
+  ],
+  "properties": {
+    "checks": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "node",
+          "text",
+          "covers"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "visible",
+              "text",
+              "value",
+              "checked",
+              "unchecked",
+              "enabled",
+              "disabled",
+              "count",
+              "order",
+              "absent",
+              "gone",
+              "url"
+            ]
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 32
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200
+          },
+          "covers": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200
+          }
+        }
+      }
+    },
+    "uncovered": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "string",
+        "maxLength": 200
+      }
+    }
+  }
+}

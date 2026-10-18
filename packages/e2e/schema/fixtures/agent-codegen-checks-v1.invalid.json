@@ -1,0 +1,6 @@
+{
+  "checks": [
+    { "kind": "screenshot", "node": "n12", "text": null, "covers": null }
+  ],
+  "uncovered": []
+}

@@ -297,7 +297,7 @@ number, `seq`, and an ISO timestamp, `at`.
 type RunEventFact =
   | { type: 'run-started'; runId; projectId; projectRoot; artifactsRoot; ci; targets; agents?; model?; judge? }
   | { type: 'plan'; total; files: { file; target; tests }[] }
-  | { type: 'notice'; target; message }
+  | { type: 'notice'; target; message; level?: 'warning' }
   | { type: 'output'; target; pair; stream: 'stdout' | 'stderr'; text }
   | { type: 'setup'; step: SetupStep; state: 'started' }
   | { type: 'setup'; step: SetupStep; state: 'finished'; durationMs; outcome?: 'reused' }
@@ -309,14 +309,21 @@ type RunEventFact =
   | { type: 'run-error'; error: SerializedError }
   | { type: 'run-interrupted'; mode: 'graceful' | 'forced' }
   | { type: 'run-stopped'; failures; limit }
-  | { type: 'run-finished'; status; exitCode; reportPath?; aiTracePath?; traces? };
+  | { type: 'run-finished'; status; exitCode; reportPath?; aiTracePath?; traces?; codegen? };
 ```
 
 - `run-started` comes first and `run-finished` last.
 - `judge` on `run-started` is the run agent's judge model, present only when
   judgments use a model other than `model`.
+- `notice` is a line the run says about itself. `level: 'warning'` marks one
+  about something the run produced short of what was asked, such as a
+  judgment `--codegen` converted only in part; the `list` reporter prints it
+  with `⚠` in place of `ℹ`.
 - `output` is one write a test made to stdout or stderr; `pair` names the
   test running at the time and is undefined between tests.
+- `codegen` on `run-finished` names where `--codegen` writes, how many
+  files this run wrote, and `modelCalls`, the calls it made for judgments'
+  checks, when it made any.
 - `test-finished` carries the full result record, including every attempt's
   artifacts.
 - `explore` appears only in an `e2e explore` run: `started`, `planning`,
@@ -361,6 +368,7 @@ type StepProgress = (
       status: 'passed' | 'failed' | 'blocked' | 'timed-out' | 'cancelled';
       durationMs: number;
       modelCalls: number;
+      codegenCalls?: number;
       error?: SerializedError;
       explanation?: string;
     }
@@ -369,6 +377,11 @@ type StepProgress = (
   | { phase: 'replay'; api: string; active: boolean }
 ) & { identity?: StepProgressIdentity };
 ```
+
+An `end` phase's `modelCalls` counts the step's own model calls.
+`codegenCalls`, present only when `--codegen` asked for the checks that
+prove the step's judgment, counts those; the step's `model` events for them
+carry `purpose: 'codegen'`.
 
 An `end` phase's `error` and `explanation` are redacted. Keep its `status`,
 including `blocked` and `cancelled`. Do not treat every non-passed step as a

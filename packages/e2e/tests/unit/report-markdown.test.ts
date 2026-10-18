@@ -155,6 +155,12 @@ function spent(document: Report1Document): Report1Document {
 }
 
 describe('renderMarkdownReport', () => {
+  it("ends the spend line with --codegen's calls for judgments' checks, which the totals before them leave out", () => {
+    const document = spent(page({ status: 'passed', results: [judged] }));
+    document.run.codegen = { dir: 'e2e-gen', files: [], gaps: [], failures: [], usage: { calls: 3, inputTokens: 900, outputTokens: 60, estimatedCostUsd: 0.02 } };
+    expect(renderMarkdownReport(document, links).split('\n')[1]).toBe('1 agent step · 1 model call · 128.4k tokens (62% cached) · $0.31 · 3 codegen calls ($0.0200)');
+  });
+
   it("leads with the counts and the spend, blocks each failure with its step and the agent's word, folds the flaky tests, and folds every test by file", () => {
     const body = renderMarkdownReport(spent(page({ status: 'failed', results: [passing, failing, flaky, skipped, judged] })), links);
     expect(body).toBe(

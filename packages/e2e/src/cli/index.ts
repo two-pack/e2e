@@ -22,6 +22,7 @@ import { runsFromCheckout } from '../telemetry/checkout.ts';
 import { initCompletedEvent, runCompletedEvent, USAGE_ERROR_CODE } from '../telemetry/events.ts';
 import { Telemetry } from '../telemetry/telemetry.ts';
 import { CACHE_DIR_DESCRIPTION, registerCacheCommand } from './cache.ts';
+import { codegen } from './codegen.ts';
 import { docsLine, examples, helpSection, pc } from './help.ts';
 import { ERROR_CODE_LIMIT, feedback, FEEDBACK_LIMITS, FEEDBACK_TYPES, type FeedbackReport } from './feedback.ts';
 import { guide } from './guide.ts';
@@ -583,6 +584,7 @@ function createProgram(version: string, telemetry: Telemetry): Command {
     .addOption(new Option('--artifacts <dir>').hideHelp().argParser(removedArtifactsFlag))
     .option('--debug', 'print phase timings and the agent step table to stderr')
     .option('--ai-trace', 'record every model call to <output>/ai-trace.json (unbox-ai)')
+    .option('--codegen', "keep each e2e file's generated test code under codegen.outDir in step with this run's agent steps")
     .option('--trace [mode]', `which attempts keep a trace page (<output>/results/<test>/trace.md): ${RECORDING_MODES.join(', ')} (bare: on), over the config and every target`, parseRecordingMode('--trace'))
     .option('--video [mode]', `which attempts record a video: ${RECORDING_MODES.join(', ')} (bare: on), over the config and every target`, parseRecordingMode('--video'))
     .addHelpText(
@@ -608,6 +610,7 @@ function createProgram(version: string, telemetry: Telemetry): Command {
           'e2e run --update-snapshots tests/home.e2e.ts',
           'e2e run --agent ux tests/onboarding.e2e.ts',
           'e2e run --agent buyer,admin tests/checkout.e2e.ts',
+          'e2e run --codegen tests/checkout.e2e.ts',
           'AI_GATEWAY_API_KEY=... e2e run --no-cache',
         ]),
         '',
@@ -640,6 +643,7 @@ function createProgram(version: string, telemetry: Telemetry): Command {
           watch?: boolean;
           debug?: boolean;
           aiTrace?: boolean;
+          codegen?: boolean;
           trace?: RecordingMode | true;
           video?: RecordingMode | true;
         },
@@ -666,6 +670,7 @@ function createProgram(version: string, telemetry: Telemetry): Command {
           updateSnapshots: options.updateSnapshots,
           debug: options.debug,
           aiTrace: options.aiTrace,
+          codegen: options.codegen,
           trace: recordingOption(options.trace),
           video: recordingOption(options.video),
         };
@@ -865,6 +870,23 @@ function createProgram(version: string, telemetry: Telemetry): Command {
     );
 
   registerCacheCommand(program);
+
+  program
+    .command('codegen')
+    .summary('manage the code e2e run --codegen keeps')
+    .description(
+      'Manage what e2e run --codegen keeps between runs: the generated test files under codegen.outDir and the records under <output>/codegen they are written from. Reads the same config as e2e run.',
+    )
+    .addHelpText('after', ['', examples(['e2e codegen clear']), '', docsLine('/reference/cli#e2e-codegen')].join('\n'))
+    .command('clear')
+    .summary('delete the generated code and its records')
+    .description(
+      'Delete every record under <output>/codegen and the generated file each one names under codegen.outDir, then the folders that leaves empty. Files no record names are left alone.',
+    )
+    .option('--config <path>', 'config file (default: the nearest e2e.config.ts)')
+    .action(async (options: { config?: string }) => {
+      process.exitCode = await codegen('clear', options);
+    });
 
   program
     .command('feedback')

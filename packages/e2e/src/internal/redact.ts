@@ -42,6 +42,11 @@ interface Compiled {
 }
 
 const MARKER_OPEN = '<secret:';
+
+/** Whether a text holds a redaction marker: a secret was masked in it, so it says where one was. */
+export function carriesSecretMarker(text: string): boolean {
+  return text.includes(MARKER_OPEN);
+}
 /**
  * The fewest consecutive characters of a value that count as a fragment of
  * it. Fewer say next to nothing about a long value, and a shorter run

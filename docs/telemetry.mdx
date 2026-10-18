@@ -140,6 +140,7 @@ own tools count together as `tool`, and any other name as `other`.
 | `model_gateway`, `model_provider`, `model_id`, `model_calls`, `model_tokens`, `model_cached_tokens`, `estimated_cost_usd` | For the first model-backed step: the AI SDK provider that served it (`gateway` for the Vercel AI Gateway, `openrouter.chat`, `openai.chat`, ...), the vendor (the first segment of a `vendor/model` id, else the provider), and the public model id. Then the run's totals |
 | `model_calls_act`, `model_calls_assert`, `model_calls_extract`, `model_calls_waitfor` | The model calls by agent entry point |
 | `cost_source` | `provider` when the provider priced the calls, `none` when nobody priced them, `null` for a run without model calls |
+| `codegen_model_calls`, `codegen_model_tokens` | The model calls and tokens `--codegen` spent asking for the checks that prove judgments; the model totals above leave them out. `0` in a run that asked for none |
 | `artifact_bytes` | The size of the artifacts the run wrote |
 | `errors`, `error_codes` | How many run-level errors, and the distinct error codes seen anywhere in the run (`LOCATOR_NOT_FOUND`, `APP_UNREACHABLE`, ...), at most 20 |
 | `primary_error_code` | The first error the run recorded, which decided its status: a run-level error, else the failed attempt's verdict, else a step's. `null` for a clean run |

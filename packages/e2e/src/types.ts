@@ -1214,6 +1214,17 @@ export interface CacheConfig {
   strict?: boolean;
 }
 
+/** Where `e2e run --codegen` writes the code it generates. */
+export interface CodegenConfig {
+  /**
+   * The directory the generated test files go to, resolved against the
+   * project root; each e2e file's code sits at the e2e file's own path under
+   * it. Default `e2e-gen`. Kept apart from the output directory, so the code
+   * can be committed while the run's results are not.
+   */
+  outDir?: string;
+}
+
 /**
  * One produced artifact as handed to an `ArtifactStore`, the moment it is
  * complete on disk: its bytes, digest, and report identity. `path` is the
@@ -1531,6 +1542,8 @@ export interface E2EConfig {
    * of trust in the cache it restores.
    */
   cache?: CacheMode | CacheConfig;
+  /** Where `e2e run --codegen` writes the code it generates. */
+  codegen?: CodegenConfig;
   /**
    * Named accounts. `credentials.user(name).password` is the handle of a
    * credential's password, a secret named `<name>.password`; `secrets.get()`

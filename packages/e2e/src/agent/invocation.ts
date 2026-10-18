@@ -18,6 +18,7 @@ import { Deadline } from '../internal/time.ts';
 import type { LocatorEngine } from '../locator/engine.ts';
 import type { SecretResolver } from '../locator/screen.ts';
 import type { ArtifactSink } from '../run/fixtures.ts';
+import type { CodegenLog } from '../run/codegen.ts';
 import type { SecretExposure } from '../run/secrecy.ts';
 import type {
   StepEvent,
@@ -118,6 +119,8 @@ export interface AgentContext {
   readonly artifacts: ArtifactSink;
   /** The attempt's trace cache, or undefined when caching is off. */
   readonly cache?: AgentCacheContext;
+  /** The attempt's `--codegen` recording; absent unless the run asked for code. */
+  readonly codegen?: CodegenLog;
   /** `--debug` phase timings; absent when the caller collects none. */
   readonly debug?: DebugTrace;
 }
@@ -140,6 +143,12 @@ export interface InvocationOptions {
    * call.
    */
   readonly vision: VisionMode;
+  /**
+   * `codegen` for the question `--codegen` asks after a judgment passed: its
+   * events carry the mark, and `finishCodegen` records its calls apart from
+   * the step's own.
+   */
+  readonly purpose?: 'codegen';
 }
 
 /**
@@ -247,6 +256,7 @@ export class Invocation {
     }
     this.observationRevision = observation.revision;
     if (pixels || observation.kind === 'pixels') this.recordPixels(observation);
+    this.runtime.codegen?.seen.saw(observation, this.runtime.redact);
     return observation;
   }
 
@@ -359,7 +369,7 @@ export class Invocation {
       const images = imagesFor(request.prompt.observation);
       try {
         const result = await this.instrument(
-          { kind: 'model', phase: 'agent.model', name: request.schemaName },
+          { kind: 'model', phase: 'agent.model', name: request.schemaName, ...this.purposeField() },
           () =>
             this.adapter.generate({
               system: this.system,
@@ -409,6 +419,7 @@ export class Invocation {
       status: 'failed',
       name,
       code: 'MODEL_OUTPUT_INVALID',
+      ...this.purposeField(),
     });
   }
 
@@ -476,6 +487,20 @@ export class Invocation {
       ...(this.treeWithheld ? { visionOnly: true } : {}),
       ...(this.visionDegraded !== undefined ? { visionDegraded: this.visionDegraded } : {}),
     });
+  }
+
+  /**
+   * Records the calls of `--codegen`'s question on the enclosing step, apart
+   * from the step's own metrics and model, which `finish` writes. Nothing
+   * when it made no call.
+   */
+  finishCodegen(): void {
+    if (this.metrics.modelCalls > 0) this.runtime.steps.attachAgentDetails({ codegenModel: this.modelInfo() });
+  }
+
+  /** The mark an event of this invocation carries, when it has a purpose. */
+  private purposeField(): Pick<StepEvent, 'purpose'> {
+    return this.options.purpose === undefined ? {} : { purpose: this.options.purpose };
   }
 
   private modelInfo(): StepModelInfo {

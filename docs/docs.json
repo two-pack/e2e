@@ -150,6 +150,7 @@
             "group": "Features",
             "pages": [
               "cache",
+              "codegen",
               "explore",
               "visual-testing",
               "authentication",

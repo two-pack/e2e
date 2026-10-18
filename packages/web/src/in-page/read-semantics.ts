@@ -700,6 +700,12 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     'alert',
   ]);
 
+  /** The roles the tree names from content where accname leaves naming them to an author. */
+  const ENGINE_CONTENT_NAMED_ROLES: ReadonlySet<string> = new Set(['listitem', 'status', 'alert']);
+
+  /** An editor's host with no role of its own: the tree reads it as a textbox, the standard as no role at all. */
+  const isRolelessEditingHost = (el: Element): boolean => isEditingHost(el) && (el.getAttribute('role') ?? '').trim() === '';
+
   /** HTML-AAM: the child element that names its parent when nothing ARIA does. */
   const NAMING_CHILD_TAGS: Readonly<Record<string, string>> = { fieldset: 'legend', figure: 'figcaption', table: 'caption' };
 
@@ -850,7 +856,18 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     return fits && !isHidden(parent);
   });
 
-  const accessibleName = memoized((el: Element): string | null => {
+  const accessibleName = memoized((el: Element): string | null => nameOf(el, false));
+
+  /**
+   * The name the standard computes, where the tree's differs: no name from
+   * content for the roles the tree names that way, and no editor placeholder
+   * for a host the standard gives no role. Icon glyphs are kept, as the
+   * standard keeps them; `reportedName` is what drops them.
+   */
+  const standardName = memoized((el: Element): string | null => nameOf(el, true));
+
+  /** One element's accessible name, as the tree reads it, or with `standard` as accname does. */
+  const nameOf = (el: Element, standard: boolean): string | null => {
     // accname reads a labelledby reference (2B) before the element's own aria-label (2C).
     const referenced = referencedNamesOf(el, nameWalk([], true));
     if (referenced !== null) return referenced.join(' ');
@@ -879,7 +896,7 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
       if (el.type === 'reset') return 'Reset';
     }
     const role = implicitRole(el);
-    if (role !== null && NAME_FROM_CONTENT_ROLES.has(role)) {
+    if (role !== null && NAME_FROM_CONTENT_ROLES.has(role) && !(standard && ENGINE_CONTENT_NAMED_ROLES.has(role))) {
       const text = nameTextOf(el, true);
       if (text !== '') return text;
     }
@@ -887,7 +904,7 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     if (title !== null && title.trim() !== '') return title.trim();
     // HTML-AAM names an unlabeled text control by its placeholder, after the
     // title: a bare search box is `textbox "Search…"`, not an anonymous field.
-    if (isPlaceholderNamed(el)) {
+    if (isPlaceholderNamed(el) && !(standard && isRolelessEditingHost(el))) {
       const placeholder = el.getAttribute('placeholder');
       if (placeholder !== null && placeholder.trim() !== '') return placeholder.trim();
       const ariaPlaceholder = el.getAttribute('aria-placeholder');
@@ -895,7 +912,7 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
       if (isEditingHost(el)) return editorPlaceholderOf(el);
     }
     return null;
-  });
+  };
 
   /**
    * The controls a placeholder may name: text-like inputs and textareas
@@ -1377,7 +1394,8 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     else text = textOf(el);
     if (projection.textLimit !== null) text = text.slice(0, projection.textLimit);
 
-    let name = reportedName(el, accessibleName(el));
+    const computedName = accessibleName(el);
+    let name = reportedName(el, computedName);
     if (projection.nameLimit !== null && name !== null) name = name.slice(0, projection.nameLimit);
     // A secure field withholds its value, never its labels: a password field is still found by its label.
     const labels = labelsOf(el);
@@ -1389,6 +1407,7 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
     // size, or one `visibility: hidden` keeps, is still a rect.
     const rect = el.getClientRects().length === 0 ? null : el.getBoundingClientRect();
     const role = isDocumentRoot ? 'document' : roleOf(el, tag);
+    const standard = isDocumentRoot ? null : standardReadingOf(el, role, name, computedName, projection.nameLimit);
     let level: number | null = null;
     if (role === 'heading') {
       const ariaLevel = Number.parseInt(el.getAttribute('aria-level') ?? '', 10);
@@ -1420,7 +1439,34 @@ export const readSemanticsFunction = <Mode extends SemanticMode>(
       attributes,
       testId: el.getAttribute(options.testIdAttribute),
       rect: rect === null ? null : { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      ...(standard === null ? {} : { standard }),
     };
+  };
+
+  /**
+   * How the standard reads an element where the tree reads it its own way,
+   * for code written in the platform's terms: an editor's host has no role,
+   * a list row, status, or alert the tree named from its content has no name,
+   * and a name keeps the icon glyphs the tree drops. Null where they agree,
+   * which is almost everywhere, so the standard name is computed only for
+   * the elements that can differ.
+   */
+  const standardReadingOf = (
+    el: Element,
+    role: string | null,
+    name: string | null,
+    computedName: string | null,
+    nameLimit: number | null,
+  ): { role?: string | null; name?: string } | null => {
+    const roleless = isRolelessEditingHost(el);
+    const mayDiffer = roleless || (role !== null && ENGINE_CONTENT_NAMED_ROLES.has(role)) || (computedName !== null && computedName !== name);
+    if (!mayDiffer) return null;
+    let standardText = standardName(el) ?? '';
+    if (nameLimit !== null) standardText = standardText.slice(0, nameLimit);
+    const reading: { role?: string | null; name?: string } = {};
+    if (roleless) reading.role = null;
+    if (standardText !== (name ?? '')) reading.name = standardText;
+    return reading.role === undefined && reading.name === undefined ? null : reading;
   };
 
   // The conditional return type resolves per call site; inside the body the

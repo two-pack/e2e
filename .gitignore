@@ -11,6 +11,7 @@ dist/
 **/.e2e/summary.md
 **/.e2e/logs/
 **/.e2e/videos/
+**/.e2e/codegen/
 # Left in older checkouts by runs before results/ held each test's trace page and artifacts.
 **/.e2e/artifacts/
 **/.e2e/traces/

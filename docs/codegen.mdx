@@ -1,0 +1,357 @@
+---
+title: Export to Playwright
+description: Turn a passing run into a Playwright Test file that runs the same test without a model.
+icon: "file-code"
+"og:image": "https://e2e.tester.army/docs/images/og/codegen.png?v=c5dfca6e35"
+"twitter:image": "https://e2e.tester.army/docs/images/og/codegen.png?v=c5dfca6e35"
+---
+
+`e2e run --codegen` writes each test file of the run as a Playwright Test
+file. The file is your test, converted: every `agent.*` call becomes what the
+agent did or checked in that run, and everything else (loops, helpers,
+`expect` calls, `screen` locators) is carried over in Playwright's spelling.
+The result runs with `npx playwright test`, with no model and no e2e.
+
+<CodeGroup>
+```bash npm
+npx e2e run --codegen tests/checkout.e2e.ts
+```
+
+```bash pnpm
+pnpm exec e2e run --codegen tests/checkout.e2e.ts
+```
+
+```bash bun
+bunx e2e run --codegen tests/checkout.e2e.ts
+```
+</CodeGroup>
+
+The run keeps one generated file per e2e file under `e2e-gen/`, at the e2e
+file's own path with `.gen.spec.ts` in place of `.e2e.ts`, and prints where.
+`.gen` marks the file as one e2e wrote, so it stays told apart from
+hand-written specs; `.spec` is what Playwright Test picks up with its default
+`testMatch`. When more than one target writes code, the target's name comes
+before the suffix (`checkout.web.gen.spec.ts`). Set
+[`codegen.outDir`](/reference/config#codegen) to put the files elsewhere.
+
+```text
+     Report  .e2e/report.json
+       Code  e2e-gen (1 file)
+```
+
+The generated files are meant to be committed: a run writes no run id or time
+into them, so the diff after a run shows what changed in the flow and nothing
+else.
+
+## Each run keeps the code in step
+
+`--codegen` keeps the code in step with the tests the way the
+[replay cache](/cache) keeps its entries, but with exactly one generated file
+per e2e file. What each test last recorded is kept in `.e2e/codegen/` (it
+follows `--output`), with the run that recorded it, and a run updates it as
+follows:
+
+| In this run | The test's code |
+| --- | --- |
+| The test passed | Written again from what this run recorded. |
+| The test was not run (`--grep`, a file named on the command line, `--last-failed`, an interrupt) | Left as it was. |
+| The test failed only because no model answered (`MODEL_UNAVAILABLE`, `MODEL_PROVIDER_FAILED`) | Left as it was. |
+| The test failed otherwise | Written again from the failed run, up to where it failed (see below). |
+| The e2e file no longer declares the test | Dropped from the file. |
+| The e2e file is gone | The generated file is deleted. |
+
+A generated file none of whose tests ran, and whose e2e file did not change,
+is not written at all. Any other is written again whole, from the e2e file as
+it is now and what its tests last recorded. An agent call whose instruction
+changed since its test last passed throws until the test passes again.
+
+A judgment reuses the checks its test's last recorded run made, when they
+proved the whole judgment there and every one of them still holds on the
+screen it passed on, and the judge is not asked again. The code then stays
+the same while the page does. A check that no longer holds, or checks that
+proved only part of the judgment, send it back to the judge, and its new
+answer replaces the old one.
+
+A generated file edited by hand since the run last wrote it is written over,
+and the run says so in a warning, as it does for a file at that path it has
+no record of writing. Keep your changes in a file of your own beside it. `e2e codegen clear` deletes every generated file and the records
+behind them, and leaves files no record names alone.
+
+## What you get
+
+For this test:
+
+```ts title="tests/checkout.e2e.ts"
+import { test } from '@e2e-dev/web';
+import { credentials, expect } from 'e2e';
+import { z } from 'zod';
+
+test('signs in and buys a hat', async ({ app, agent, screen }) => {
+  const buyer = credentials.user('buyer');
+  await app.open('/login');
+  await agent.act('sign in', { params: { username: buyer.username, password: buyer.password } });
+  await agent.waitFor('the shop is shown', { timeout: 10_000 });
+  await agent.act('add the blue hat to the cart and check out');
+  await agent.assert('the order is confirmed');
+  const order = await agent.extract('the order number', { schema: z.object({ id: z.number() }) });
+  expect(order.id).toBeGreaterThan(0);
+  await expect(screen.getByRole('button', 'Track order')).toBeVisible();
+});
+```
+
+the web engine writes:
+
+```ts title="e2e-gen/tests/checkout.gen.spec.ts"
+import { expect, test } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
+import { z } from 'zod';
+
+test.use({ baseURL: process.env["BASE_URL"] ?? "http://localhost:3000/" });
+
+function secret(variable: string): string { /* reads process.env[variable] */ }
+function within(page: Page, key: string): Locator { /* the row or list item holding key */ }
+const credentials = { /* e2e's credentials, from E2E_USER_<NAME>_USERNAME and _PASSWORD */ };
+
+test('signs in and buys a hat', async ({ page }) => {
+  const buyer = credentials.user('buyer');
+  await page.goto('/login');
+  // agent.act: sign in
+  await page.getByRole("textbox", { name: "Email", exact: true }).fill("buyer@example.com");
+  await page.getByRole("textbox", { name: "Password", exact: true }).fill(secret("E2E_USER_BUYER_PASSWORD"));
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  // agent.waitFor: the shop is shown
+  await expect(page).toHaveURL("/shop", { timeout: 10_000 });
+  await expect(page.getByRole("heading", { name: "Hats", exact: true })).toBeVisible({ timeout: 10_000 });
+  // agent.act: add the blue hat to the cart and check out
+  await within(page, "Blue hat").getByRole("button", { name: "Add to cart", exact: true }).click();
+  await page.getByRole("link", { name: "Cart", exact: true }).click();
+  await page.getByRole("button", { name: "Check out", exact: true }).click();
+  // agent.assert: the order is confirmed
+  await expect(page.getByRole("heading", { name: "Order #1042 confirmed", exact: true })).toBeVisible();
+  // agent.extract: the order number
+  await expect(page.getByRole("heading", { name: "Order #1042 confirmed", exact: true })).toContainText("#1042");
+  const order = ({"id":1042});
+  expect(order.id).toBeGreaterThan(0);
+  await expect(page.getByRole('button', { name: 'Track order', exact: true })).toBeVisible();
+});
+```
+
+Run it with Playwright Test like any other spec. Set `BASE_URL` when the app
+is not at the URL the e2e target used.
+
+## How each agent call becomes code
+
+- **`agent.act`** becomes the clicks, fills, selects, and key presses the
+  agent made, whether the model chose them or the [replay cache](/cache)
+  replayed them.
+- **`agent.assert`** becomes the `expect` calls that prove it. Once the
+  judgment passes, the judge is asked one more question about the same
+  screen: which facts on it show the assertion holds. The runner checks every
+  proposed fact against that screen and keeps only the ones it bears out: a
+  node is visible, contains a text, holds a value (an empty one included), is
+  checked or enabled; so many nodes of a role are on screen, or they read in
+  a given order; the URL is a path; or something is not shown (see below).
+- **`agent.waitFor`** becomes the same `expect` calls with the call's
+  `timeout` (30 seconds when it names none). Playwright retries each until
+  then, as `waitFor` polled.
+- **`agent.extract`** becomes the value it returned in the run, behind the
+  checks that show that value on screen, so the test code that reads it runs
+  as before.
+
+The extra question costs one judge call for each passing judgment, and only
+in a `--codegen` run. It never changes a test's result: when it fails, the
+call is written as a `throw` that names it, and you write the `expect` by
+hand. Its calls are counted apart from the judgment's own: the `list`
+reporter shows them on the step as `1 codegen call` and their total on the
+`Code` row, and `report.json` keeps them under each step's `codegenModel`
+and, summed with their tokens and cost, under `run.codegen.usage`. The `AI`
+row, a step's `metrics.modelCalls` and `model`, and `run.usage` leave them
+out.
+
+### Checking that something is not shown
+
+A check that something is missing proves nothing when it could not have
+failed, so both kinds are kept only for something an earlier screen of the
+same test showed. Every screen counts: the ones an agent step looked at,
+an `agent.act` step's included, and, in a `--codegen` run, the screen each
+other step left once it passed (an `app.open`, a `screen` action or
+`expect`). That last look is one capture with no model call, taken only when
+the run writes code. What showed only in the middle of a step is not seen:
+
+- **An element is gone.** The judge is shown the elements earlier screens of
+  the test showed that the current one does not, and can name one. The code
+  counts it zero anywhere on the page, found the way the rest of the code
+  finds a node, so a list row a step added and a later step removed is
+  `await expect(page.getByRole("listitem").filter({ hasText: /^\s*Buy\s*milk\s*$/u })).toHaveCount(0);`.
+  An element with nothing of its own to be found by (a test id, a name, the
+  text it shows, a placeholder), such as an unnamed list, is offered by its
+  role alone, and only while no element of that role is on screen:
+  `await expect(page.getByRole("list")).toHaveCount(0);` says no list is
+  shown, so it also fails on a later page that shows an unrelated list. The
+  judge is told to use it only where the instruction says that much. An
+  element the engine has no locator for by its role is not offered.
+- **A text is absent.** Kept only when the instruction itself names the text
+  as missing and an earlier screen showed it. A word the instruction uses for
+  what it means ("the task list") is seldom what the app shows, and checking
+  that the page never shows it would pass on every page.
+
+Neither is kept when the screen was listed only in part, since what looks
+missing may be past the cut. Something no earlier screen showed, such as a
+task list that a signed-out user never saw, cannot be checked this way; the
+code says so (see below).
+
+### A check names one element
+
+A check is kept only when the locator written for it finds that element and
+nothing else on the screen the judgment passed on. On a sign-in card whose
+title reads "Login" like its button, `getByText("Login", { exact: true })`
+finds both, so a check on the title is dropped and one on the button kept.
+The engine answers which elements its locator would find (`locate` on
+[`codegen`](/reference/engine#code-generation)); the judge is asked to name
+an element by its role for the same reason.
+
+### When the checks prove only part of a judgment
+
+The judge says, for each check, which part of the instruction it proves, and
+names the parts it could turn into no check. A part is left unchecked when the
+judge named it so, or when only a check the runner dropped covered it. The
+code then says so above the checks:
+
+```ts
+// agent.assert: the sign-in form is shown and the task list is not
+// NOTE: the checks below prove only part of this judgment.
+//   The judge's explanation of its verdict (its reasoning, not a checked fact): The Login button is shown and no list is on screen.
+//   Not checked: the task list is not
+//   Dropped absent "Logout": the instruction does not say this text is missing
+//   Screenshot of the screen it passed on: .e2e/results/web/tests_first.e2e.ts___signs_out/default/attempt-0/assert-5.png
+await expect(page.getByRole("button", { name: "Login", exact: true })).toBeVisible();
+```
+
+The checks that were kept still run. A dropped check is listed with why, so
+you can add it as an `expect` when you agree with it. Every text in these
+comments comes from the judge and passes through the same redaction as the
+rest of the file; a dropped check whose text would carry a secret is listed
+without its content. A judgment no check could be kept for throws in place of
+the call, with the same comments above the `throw`.
+
+The screenshot is of the screen the judgment passed on, in the run's
+artifacts: the note is meant to be acted on after the run that wrote it, and
+a later run clears the artifacts. An `agent.assert` reuses the screenshot it
+keeps as evidence; an `agent.waitFor`, an `agent.extract`, and a custom
+executor's assertion take one only when their checks leave a gap. It is
+masked like every screenshot the run keeps, and none is taken once a secret
+was filled in the attempt, nor for an `agent.assert` called with
+`screenshot: false`; the comment then says why.
+
+The run ends with a warning that points at each such judgment:
+
+```text
+⚠ --codegen: 1 judgment was only partly converted: e2e-gen/tests/first.gen.spec.ts:27 (screenshot .e2e/results/web/tests_first.e2e.ts___signs_out/default/attempt-0/assert-5.png)
+```
+
+and `report.json` lists them under `run.codegen.gaps`, each with the file and
+line, `partial` or `unconverted`, the test, the instruction, the parts left
+unchecked, and the screenshot or why there is none, so CI can fail on them.
+A judgment of a test this run did not refresh is listed too, marked
+`carried`, and the warning counts it as one from an earlier run.
+
+### When a test failed
+
+When a test fails in a way that says something about the app (an assertion
+that did not hold, a step that timed out, a locator that found nothing), its
+code is written again from that run, up to the failure, and stops there:
+
+```ts
+// agent.assert: the order is confirmed
+// FAILED: in the run this code was written from, the test failed here: ASSERTION_FAILED: the page shows the cart, not a confirmation
+//   The judge's explanation of its verdict (its reasoning, not a checked fact): The page still lists the hat in the cart and shows no order number.
+//   Screenshot at the failure: .e2e/results/web/tests_checkout.e2e.ts___buys_a_hat/default/attempt-0/screenshots/004-failure.png
+throw new Error("agent.assert(\"the order is confirmed\") failed in the run this code was written from (ASSERTION_FAILED)");
+```
+
+What the agent did before the failure is written as the run did it, an
+`agent.act` that failed part way included. When the test's own code failed
+(an `expect`, a `screen` action), Playwright stops on that same line, so the
+comment goes at the top of the test and names the line. The calls after the
+failure throw, as calls the run did not reach. The run warns about each such
+test, and `report.json` lists it under `run.codegen.failures`. The test's
+earlier code stays in the history of the file, for the diff to show what
+broke.
+
+### How a node is found
+
+A node is found by test id first, then role and accessible name, then
+placeholder, the structural selector, and text. A node that sat in a row,
+list item, group, or dialog is scoped to it by `within()`, and one of several
+identical controls gets `.nth()`. The web engine's
+[`testIdAttribute`](/browser) is set with `selectors.setTestIdAttribute`.
+
+Locators follow the standard (W3C accessible names, as Playwright computes
+them). In a few places e2e reads a node its own way for the model; it records
+the standard's reading of those nodes beside what it shows the model, and the
+code is written from the standard's:
+
+| e2e reads | The standard reads | Generated locator |
+| --- | --- | --- |
+| a `listitem`, `status`, or `alert` named from what it contains | no name, unless an author named it | `getByRole("listitem").filter({ hasText: /^\s*Buy\s*milk\s*$/u })`: the text it shows, as the whole of its content |
+| a name with its icon-font glyphs dropped (`Sign in`) | the name with the glyph (`\uf090 Sign in`) | `getByRole("button", { name: "\uf090 Sign in", exact: true })` |
+| a glyph-only control named by its `title` (`Sign out`) | the glyph alone | `getByTitle("Sign out", { exact: true })` |
+| an editor's `contenteditable` host as a `textbox` | no role | `getByLabel("Body", { exact: true })` by its label, else `locator('[data-placeholder="Write…"]')` by the placeholder e2e named it from, else the editing host |
+| an `iframe` | no role | `locator('iframe[title="…"], iframe[aria-label="…"]')` |
+
+An author's name always wins: a list row with an `aria-label` is found by it.
+
+The web engine's tests run every generated locator against the pages its
+own tree is checked on, and against every web-benchmark scenario, so a
+node e2e reads that the generated code could not find shows up there.
+
+## How the rest of the test is converted
+
+| e2e | Playwright |
+| --- | --- |
+| `app`, `screen`, `browser` fixtures | `page` |
+| `app.open(url)`, `app.open()` | `page.goto(url)`, `page.goto("/")` |
+| `app.back()`, `app.restart()` | `page.goBack()`, `page.reload()` |
+| `getByRole(role, 'Name')`, `getByRole(role, { name })` | `getByRole(role, { name: 'Name', exact: true })`: e2e matches the whole name by default |
+| `getByText`, `getByLabel`, `getByPlaceholder` with a string | the same with `{ exact: true }` |
+| `tap()`, `doubleTap()`, `secondaryTap()` | `click()`, `dblclick()`, `click({ button: "right" })` |
+| `selectOption('Large')` | `selectOption({ label: 'Large' })`: e2e matches the label |
+| `scrollIntoView()`, `textContent()`, `allTextContents()` | `scrollIntoViewIfNeeded()`, `innerText()`, `allInnerTexts()` |
+| `toBeSelected()`, `toBeExpanded()` | `toHaveAttribute("aria-selected", "true")`, `"aria-expanded"` |
+| `credentials.user(name)` | a helper reading `E2E_USER_<NAME>_USERNAME` (else the configured username) and `E2E_USER_<NAME>_PASSWORD` |
+| `secrets.get(name)` | a helper reading `E2E_SECRET_<NAME>` |
+| `unique(value)` | `value` |
+| test and describe options (`tags`, `session`, `requires`) | a comment beside the title |
+| `session.save(name)` | a comment: keep sign-in with Playwright's `storageState` |
+
+A secret never reaches the file. An agent's secret fill reads the variable
+that overrides the secret in the e2e config, the same one the helpers read.
+
+## What a run cannot record
+
+- A call the run never reached, such as one after a failure or inside an
+  `if` the run never entered, is a `throw`: there is no recording to write
+  from it.
+- A project tool the agent called, or a value it typed that it read off the
+  screen in that run, is a `TODO` comment inside the step.
+- A step whose recording could not be kept whole (a value that held a secret,
+  more than 50 actions, a node with nothing durable to find it by) carries a
+  `NOTE` above its calls.
+- A member of a `test.describe.serial` group and an [`e2e explore`](/explore)
+  run are not recorded.
+
+When the test file cannot be read or parsed, the run writes the recorded
+steps alone, one Playwright test per passing test.
+
+## The code is a snapshot
+
+The agent adapts to the screen on every run; the file does not. Each test in
+it is what the agent did and checked in the run that last refreshed that
+test, against the data that run saw. Read the diff before you commit it, and
+run `--codegen` again after the app changes. A step replayed from the [replay cache](/cache) writes the
+same actions as the run that recorded it.
+
+Only the web engine writes code. Any other target gets a notice
+(`--codegen wrote no code for target "ios": engine "mobile" declares no codegen`).
+An engine author adds it with the [`codegen`](/reference/engine#code-generation)
+member.

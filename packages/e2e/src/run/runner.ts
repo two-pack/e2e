@@ -34,6 +34,7 @@ import {
 } from '../internal/errors.ts';
 import { loadAiSdk } from '../agent/ai-sdk.ts';
 import { AiTraceCollector, AiTraceRecorder, registerAiTraceRecorder } from '../internal/ai-trace.ts';
+import { CodegenSync, codegenFailureWarnings, codegenGapWarnings, reportCodegen, type CodegenCollectionView, type CodegenOutput } from './codegen-sync.ts';
 import { DebugTrace } from '../internal/debug.ts';
 import { resultId, timestamp, uuidv7 } from '../internal/ids.ts';
 import type { ExploreProgress } from '../explore/progress.ts';
@@ -150,6 +151,12 @@ export interface RunOptions {
   debug?: boolean | undefined;
   /** Records every model call to `<output>/ai-trace.json` (`--ai-trace`). */
   aiTrace?: boolean | undefined;
+  /**
+   * Writes the agent steps of passing tests out as each target engine's own
+   * test code under `<output>/codegen/` (`--codegen`); a target whose engine
+   * writes none is named in a notice.
+   */
+  codegen?: boolean | undefined;
   /**
    * Which attempts keep a trace (`--trace [mode]`), over the config's and
    * every target's `trace`; a test's own `trace` still wins.
@@ -351,6 +358,8 @@ export interface RunOutcome {
   reportPath: string | undefined;
   /** Where the AI trace was written; undefined unless `aiTrace` was requested. */
   aiTracePath: string | undefined;
+  /** The files `codegen` wrote, absolute; undefined unless it was requested and the run reached its tests. */
+  codegenFiles: readonly string[] | undefined;
   results: readonly ResultRecord[];
   /** The config the run resolved; undefined when it failed to load. */
   config: ResolvedConfig | undefined;
@@ -379,6 +388,9 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
   let startedAt = timestamp();
   const debug = new DebugTrace(options.debug === true);
   const aiTrace = options.aiTrace === true ? new AiTraceCollector() : undefined;
+  const codegen = options.codegen === true ? new CodegenSync() : undefined;
+  /** The test files this run collected, for `--codegen` to tell a test or file the project no longer has. */
+  let codegenCollection: CodegenCollectionView | undefined;
   /** The in-process recorder; child-process workers own their own. */
   let aiTraceRecorder: AiTraceRecorder | undefined;
   const interruptController = new AbortController();
@@ -408,6 +420,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
   if (options.trace !== undefined) cli.trace = options.trace;
   if (options.video !== undefined) cli.video = options.video;
   if (options.agent !== undefined) cli.agents = typeof options.agent === 'string' ? [options.agent] : options.agent;
+  if (options.codegen === true) cli.codegen = true;
 
   // Config resolves before anything is emitted, and its failure is kept rather
   // than thrown: the reporter set is config truth (CLI overrides merge during
@@ -521,7 +534,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
   // among them, and the files it could not collect: what a rerun can still
   // carry when the report lists no row.
   let rerunCollection: RerunCollection = { testIds: new Set(), uncollectedFiles: new Set() };
-  const buildRunReport = (exitCode: RunExitCode): Report1Document => {
+  const buildRunReport = (exitCode: RunExitCode, codegenOutput?: CodegenOutput): Report1Document => {
     const document = buildReport({
       runId,
       config: loaded.config,
@@ -534,6 +547,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       runErrors,
       targetProvenance,
       explore: options.tests?.explore?.snapshot(),
+      codegen: codegenOutput === undefined || loaded.config === undefined ? undefined : reportCodegen(codegenOutput, loaded.config.projectRoot),
     });
     const carried = lastRun === undefined ? undefined : carryForward(lastRun, document, rerunCollection);
     return carried === undefined ? document : { ...document, run: { ...document.run, carried } };
@@ -618,6 +632,38 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
   };
 
   /**
+   * Writes the engines' code for `--codegen` on the same terms as the AI
+   * trace: a failed write or a `render` that threw is a recorded run error,
+   * and a target whose engine writes no code is named in a notice.
+   */
+  const writeCodegen = async (config: ResolvedConfig): Promise<CodegenOutput | undefined> => {
+    if (codegen === undefined) return undefined;
+    try {
+      if (codegenCollection === undefined) return undefined;
+      const output = await codegen.write(config, codegenCollection, runId);
+      for (const { target, engine } of output.unsupported) {
+        notice(target, `--codegen wrote no code for target "${target}": engine "${engine}" declares no codegen`);
+      }
+      for (const { file, why } of output.overwritten) {
+        const over = why === 'edited' ? 'edits made to it since e2e last wrote it' : 'a file e2e has no record of writing';
+        emit({ type: 'notice', target: 'run', message: `--codegen wrote ${file} over ${over}`, level: 'warning' });
+      }
+      for (const message of [...codegenFailureWarnings(output.failures), ...codegenGapWarnings(output.gaps)]) {
+        emit({ type: 'notice', target: 'run', message, level: 'warning' });
+      }
+      return output;
+    } catch (cause) {
+      recordFailure(
+        new E2EError('infrastructure', 'REPORT_WRITE_FAILED', `the generated code could not be written: ${errorMessage(cause)}`, {
+          cause,
+        }),
+        'report',
+      );
+      return undefined;
+    }
+  };
+
+  /**
    * Whether the run got as far as its tests. Only such a run writes into the
    * output directory: one that stopped before leaves the previous run's
    * report, AI trace, and artifacts where they are.
@@ -627,15 +673,16 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
   const finish = async (): Promise<RunOutcome> => {
     const written = testsStarted ? loaded.config : undefined;
     const aiTracePath = written === undefined ? undefined : await writeAiTrace(written);
+    const codegenOutput = written === undefined ? undefined : await writeCodegen(written);
     // One document: what is written is what the reporters and the outcome
     // see, so a reporter uploading `report` ships the file byte for byte.
     // Only a failed write, itself a run error, forces a rebuild that records it.
-    const document = buildRunReport(currentExitCode());
+    const document = buildRunReport(currentExitCode(), codegenOutput);
     const recorded = runErrors.length;
     const reportPath = written === undefined ? undefined : await writeCanonicalReport(written, document);
     const traces = written === undefined ? new Map<string, string>() : await writeTraces(written, document);
     const exitCode = currentExitCode();
-    const report = runErrors.length === recorded ? document : buildRunReport(exitCode);
+    const report = runErrors.length === recorded ? document : buildRunReport(exitCode, codegenOutput);
     // Read back from the report rather than recomputed: the report derives
     // `blocked` from the results, and the outcome and the event must agree
     // with the file a host reads afterwards.
@@ -648,6 +695,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       ...(reportPath === undefined ? {} : { reportPath }),
       ...(aiTracePath === undefined ? {} : { aiTracePath }),
       ...(traces.size === 0 ? {} : { traces: Object.fromEntries(traces) }),
+      ...(codegenOutput === undefined ? {} : { codegen: codegenFinished(codegenOutput, report.run.codegen?.usage?.calls) }),
     });
     // The list reporter has printed its summary and stopped its window; a
     // line another reporter left unfinished on `run-finished` prints too.
@@ -679,7 +727,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       forceController.signal,
     );
     listReporter?.rows(rows);
-    return { exitCode, status, report, reportPath, aiTracePath, results, config: loaded.config };
+    return { exitCode, status, report, reportPath, aiTracePath, codegenFiles: codegenOutput?.files, results, config: loaded.config };
   };
 
   if (loaded.config === undefined) {
@@ -774,6 +822,11 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       return;
     }
     const { collection, selection } = planned;
+    codegenCollection = {
+      full: options.tests === undefined,
+      files: new Map(collection.files.map((entry) => [entry.file, entry.tests.map((test) => test.id)])),
+      uncollected: new Set(collection.uncollected.map((skipped) => skipped.file)),
+    };
     if (!interrupted.aborted) {
       for (const skipped of collection.uncollected) {
         const why = options.tests === undefined ? 'which no positional selected' : 'collected only for its setup tests';
@@ -946,8 +999,9 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
         forceSignal: forceController.signal,
         forceGraceMs: config.cleanupTimeout + FORCE_KILL_MARGIN_MS,
         events: {
-          onResult: (result) => {
+          onResult: (result, recordings) => {
             results.push(result);
+            codegen?.add(result, recordings);
             emit({ type: 'test-finished', result: toEventResult(result) });
           },
           onSerialGroup: (group) => {
@@ -1220,6 +1274,11 @@ async function loadRunConfig(
     env,
     cli,
   });
+}
+
+/** The `codegen` of `run-finished`: where the code went, how many files, and the calls made for judgments' checks when there were any. */
+function codegenFinished(output: CodegenOutput, modelCalls: number | undefined): { dir: string; files: number; modelCalls?: number } {
+  return { dir: output.dir, files: output.files.length, ...(modelCalls === undefined ? {} : { modelCalls }) };
 }
 
 /**

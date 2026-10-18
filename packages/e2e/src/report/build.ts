@@ -86,6 +86,8 @@ export interface BuildReportOptions {
   targetProvenance: ReadonlyMap<string, TargetProvenance>;
   /** The exploration record of an `e2e explore` run; absent for a test run. */
   explore?: ReportExplore | undefined;
+  /** What `--codegen` wrote; absent unless the run asked for code and wrote it. */
+  codegen?: ReportCodegen | undefined;
   /** The commit the code under test came from; absent outside git and CI. */
   vcs?: VcsInfo | undefined;
 }
@@ -123,6 +125,77 @@ export interface ReportExploreStep {
   errorCode?: string | undefined;
   startedAt: string;
   durationMs: number;
+}
+
+/** The `run.codegen` block: where `--codegen` writes, the files it wrote in this run, project-root relative, and every judgment the code does not prove whole. */
+export interface ReportCodegen {
+  readonly dir: string;
+  readonly files: readonly string[];
+  readonly gaps: readonly ReportCodegenGap[];
+  readonly failures: readonly ReportCodegenFailure[];
+  /** The model calls the run made for judgments' checks, summed over its steps' `codegenModel`; absent when it made none. */
+  readonly usage?: ReportCodegenUsage;
+}
+
+/** What `--codegen`'s questions for judgments' checks cost a run, apart from `run.usage`. */
+export interface ReportCodegenUsage {
+  readonly calls: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  /** Input tokens served from provider prompt caches; present once any call reports the split. */
+  readonly cacheReadTokens?: number;
+  /** Present once any call reports a cost. */
+  readonly estimatedCostUsd?: number;
+}
+
+/** One test whose generated code stops where it failed, in the run the code was written from. */
+export interface ReportCodegenFailure {
+  /** The generated file, project-root relative with `/` separators. */
+  readonly file: string;
+  /** The one-based line of the file the failure's comment starts at. */
+  readonly line: number;
+  /** The e2e test file, project-root relative. */
+  readonly source: string;
+  readonly test: string;
+  /** The agent step the test failed at, when one did. */
+  readonly api?: string;
+  readonly label?: string;
+  /** The error code and message, redacted. */
+  readonly code: string;
+  readonly message: string;
+  /** The screenshot taken at the failure, in the run's artifacts, project-root relative. */
+  readonly screenshot?: string;
+  /** Why there is no screenshot. */
+  readonly screenshotWithheld?: string;
+  /** True when the test did not run in this run: the failure is what an earlier run recorded. */
+  readonly carried?: boolean;
+}
+
+/**
+ * One judgment the generated code does not prove whole: `partial` when its
+ * checks prove only some of it, `unconverted` when no check could be kept and
+ * the code throws in its place.
+ */
+export interface ReportCodegenGap {
+  /** The generated file, project-root relative with `/` separators. */
+  readonly file: string;
+  /** The one-based line of the file the judgment starts at. */
+  readonly line: number;
+  readonly kind: 'partial' | 'unconverted';
+  /** The e2e test file the judgment ran in, project-root relative. */
+  readonly source: string;
+  readonly test: string;
+  readonly api: string;
+  /** The judgment's instruction, as the report labels the step. */
+  readonly instruction: string;
+  /** The parts of the instruction the code does not check, as the judge named them. */
+  readonly uncovered: readonly string[];
+  /** The screenshot of the screen the judgment passed on, in the run's artifacts, project-root relative. */
+  readonly screenshot?: string;
+  /** Why there is no screenshot. */
+  readonly screenshotWithheld?: string;
+  /** True when the judgment's test did not run in this run: the gap is what an earlier run recorded. */
+  readonly carried?: boolean;
 }
 
 /** The `run.explore` block: what `e2e explore` was asked, did, and found. */
@@ -184,6 +257,8 @@ export interface ReportStep {
   /** The last model turns of an agent step, oldest first. */
   turns?: readonly StepTurn[] | undefined;
   model?: StepModelInfo | undefined;
+  /** The model calls `--codegen` made for the checks that prove the step's judgment, apart from `model`. */
+  codegenModel?: StepModelInfo | undefined;
   /** The configured agent an agent step ran with, by name. */
   agent?: string | undefined;
   /** The hook the step ran in; absent for a step of the test body. */
@@ -399,6 +474,8 @@ export interface Report1Document {
     carried?: ReportCarried | undefined;
     /** Present on an `e2e explore` run only. */
     explore?: ReportExplore | undefined;
+    /** Present on an `e2e run --codegen` run that wrote its code. */
+    codegen?: ReportCodegen | undefined;
   };
 }
 
@@ -778,6 +855,31 @@ export function buildReport(options: BuildReportOptions): Report1Document {
         discovered: summary.discovered,
       }),
       ...(options.explore === undefined ? {} : { explore: options.explore }),
+      ...(options.codegen === undefined ? {} : { codegen: withCodegenUsage(options.codegen, options.results, options.serialGroups) }),
+    },
+  };
+}
+
+/** The `run.codegen` block with the usage its steps' `codegenModel` add up to, when any step asked. */
+function withCodegenUsage(codegen: ReportCodegen, results: readonly ResultRecord[], serialGroups: readonly SerialGroupRecord[]): ReportCodegen {
+  const steps = [
+    ...results.flatMap((result) => result.attempts.flatMap((attempt) => attempt.steps)),
+    ...serialGroups.flatMap((group) => group.attempts.flatMap((attempt) => attempt.members.flatMap((member) => member.steps))),
+  ];
+  const models = steps.flatMap((step) => (step.codegenModel === undefined ? [] : [step.codegenModel]));
+  if (models.length === 0) return codegen;
+  const sum = (read: (model: StepModelInfo) => number | undefined): number | undefined =>
+    models.some((model) => read(model) !== undefined) ? models.reduce((total, model) => total + (read(model) ?? 0), 0) : undefined;
+  const cacheReadTokens = sum((model) => model.cacheReadTokens);
+  const estimatedCostUsd = sum((model) => model.estimatedCostUsd);
+  return {
+    ...codegen,
+    usage: {
+      calls: sum((model) => model.calls)!,
+      inputTokens: sum((model) => model.inputTokens)!,
+      outputTokens: sum((model) => model.outputTokens)!,
+      ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+      ...(estimatedCostUsd === undefined ? {} : { estimatedCostUsd }),
     },
   };
 }

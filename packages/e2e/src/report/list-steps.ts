@@ -54,12 +54,15 @@ export interface StepLineOptions {
 
 /**
  * One finished agent step: outcome glyph, api, quoted label, then duration,
- * model calls, and a non-passed status.
+ * model calls, the calls `--codegen` made for its checks, and a non-passed
+ * status.
  */
 export function stepLine(pc: Colors, step: FinishedStep, options: StepLineOptions = {}): string {
   const glyph = step.status === 'passed' ? pc.green(F_CHECK) : pc.red(F_CROSS);
+  const codegen = step.codegenCalls ?? 0;
   const calls =
-    step.modelCalls > 0 ? ` · ${step.modelCalls} model call${step.modelCalls === 1 ? '' : 's'}` : '';
+    (step.modelCalls > 0 ? ` · ${step.modelCalls} model call${step.modelCalls === 1 ? '' : 's'}` : '') +
+    (codegen > 0 ? ` · ${codegen} codegen call${codegen === 1 ? '' : 's'}` : '');
   const outcome = step.status === 'passed' ? '' : ` ${step.status}`;
   const head = `${glyph} ${options.context ?? ''}${pc.dim(step.api)} `;
   const tail = pc.dim(`${formatTime(step.durationMs)}${calls}${outcome}`);
@@ -110,11 +113,12 @@ function tokenSplit(event: ShownEvent): string {
  * the act it performed when the engine described it, else as the tool name
  * (`tool:` prefixes come from executor tool accounting). A model turn the
  * model reasoned its way through appends an excerpt of that reasoning,
- * clipped to the row: why it acted, not just that it did.
+ * clipped to the row: why it acted, not just that it did. The turn
+ * `--codegen` asks for a judgment's checks reads as `Writing checks`.
  */
 export function eventLine(pc: Colors, event: ShownEvent, options: { maxWidth?: number } = {}): string {
   if (event.kind === 'model') {
-    const head = `${F_MODEL} Thinking (${formatTime(event.durationMs)})${tokenSplit(event)}`;
+    const head = `${F_MODEL} ${event.purpose === 'codegen' ? 'Writing checks' : 'Thinking'} (${formatTime(event.durationMs)})${tokenSplit(event)}`;
     const reasoning = reasoningExcerpt(event.reasoning, visibleWidth(head), options.maxWidth);
     return pc.dim(reasoning === undefined ? head : `${head} · ${reasoning}`);
   }

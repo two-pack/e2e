@@ -20,6 +20,8 @@ export interface OutputLayout {
    * clears it when its tests start.
    */
   readonly results: string;
+  /** Where `--codegen` writes the engines' code, one directory per target; a codegen run replaces it. */
+  readonly codegen: string;
   /** The per-run encrypted session stores. */
   readonly sessions: string;
   /** Where `e2e mcp` saves one session's recordings. */
@@ -32,6 +34,7 @@ export function outputLayout(output: string): OutputLayout {
     report: path.join(output, 'report.json'),
     aiTrace: path.join(output, 'ai-trace.json'),
     results: path.join(output, 'results'),
+    codegen: path.join(output, 'codegen'),
     sessions: path.join(output, 'sessions'),
     videos: (sessionId) => path.join(output, 'videos', sessionId),
   };

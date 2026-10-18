@@ -116,12 +116,12 @@ export class TargetWorker {
         ...(deps.debug !== undefined ? { debug: deps.debug } : {}),
         inMemory: deps.inMemory,
         events: {
-          onResult: (result) => {
+          onResult: (result, codegen) => {
             // Teardown after the result (an afterAll) belongs to no pair.
             if (this.inFlight?.testId === result.test.id && this.inFlight.agent === result.agent && this.inFlight.repeat === result.repeat) {
               this.inFlight = undefined;
             }
-            this.host.emit({ type: 'result', result: encodeResult(result) });
+            this.host.emit({ type: 'result', result: encodeResult(result), ...(codegen === undefined ? {} : { codegen }) });
             if (countsTowardFailureLimit(result.status)) this.countFailure();
           },
           onSerialGroup: (group) => this.host.emit({ type: 'serial-group', group }),

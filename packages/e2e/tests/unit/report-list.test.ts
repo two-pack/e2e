@@ -162,6 +162,7 @@ function runFinished(
     exitCode?: 0 | 1 | 2 | 130;
     reportPath?: string;
     aiTracePath?: string;
+    codegen?: { dir: string; files: number; modelCalls?: number };
   } = {},
 ): RunEventFact {
   return {
@@ -170,6 +171,7 @@ function runFinished(
     exitCode: overrides.exitCode ?? 0,
     ...(overrides.reportPath === undefined ? {} : { reportPath: overrides.reportPath }),
     ...(overrides.aiTracePath === undefined ? {} : { aiTracePath: overrides.aiTracePath }),
+    ...(overrides.codegen === undefined ? {} : { codegen: overrides.codegen }),
   };
 }
 
@@ -304,6 +306,21 @@ describe('ListReporter', () => {
         '   ✓ checkout > pays [buyer] 80ms',
         '   ✓ checkout > pays [admin] 80ms',
       ]);
+    });
+
+    it("shows --codegen's calls for a judgment's checks apart from the step's own, and their total on the Code row", () => {
+      const { lines, output } = capture();
+      const reporter = plainReporter(output);
+      reporter.handle(runStarted());
+      reporter.handle(plan([{ file: 'tests/checkout.e2e.ts', tests: 1 }]));
+      reporter.handle({ type: 'test-started', testId: 't1', agent: 'default', repeat: 0, title: 'checkout > pays', file: 'tests/checkout.e2e.ts', serialId: undefined, target: 'chromium' });
+      reporter.handle({ type: 'step', testId: 't1', agent: 'default', repeat: 0, target: 'chromium', progress: { phase: 'start', kind: 'agent', api: 'agent.assert', label: 'paid' } });
+      lines.length = 0;
+      reporter.handle({ type: 'step', testId: 't1', agent: 'default', repeat: 0, target: 'chromium', progress: { phase: 'end', kind: 'agent', api: 'agent.assert', label: 'paid', status: 'passed', durationMs: 4_200, modelCalls: 1, codegenCalls: 2 } });
+      expect(lines).toEqual(['   ✓ checkout > pays > agent.assert "paid" 4.20s · 1 model call · 2 codegen calls']);
+      reporter.handle(finished(result({ status: 'passed', id: 't1', file: 'tests/checkout.e2e.ts', title: ['checkout', 'pays'], attempts: [attempt({ durationMs: 80 })] })));
+      reporter.handle(runFinished({ codegen: { dir: '/project/e2e-gen', files: 1, modelCalls: 2 } }));
+      expect(lines.find((line) => line.trimStart().startsWith('Code'))).toMatch(/Code {2}\S*e2e-gen \(1 file\) · 2 model calls$/u);
     });
 
     it('sums durations across attempts and marks flaky results', () => {
