@@ -127,4 +127,28 @@ describe('agentStepTable', () => {
     expect(rows.map((row) => row[1])).toEqual(['typesafe-ai/jev', '-', 'fake-loop/scripted-loop']);
     expect(table).not.toContain('undefined');
   });
+
+  it("gives --codegen's calls for a judgment's checks a column of their own, and leaves their time out of the step's model time", () => {
+    const judged = model('fake-loop', 'scripted-loop', 1);
+    const codegen = { ...model('fake-loop', 'scripted-loop', 2), inputTokens: 300, outputTokens: 40 };
+    const event = (durationMs: number, purpose?: 'codegen') => ({
+      kind: 'model' as const,
+      startedAt: '2026-01-01T00:00:00.000Z',
+      durationMs,
+      status: 'passed' as const,
+      ...(purpose === undefined ? {} : { purpose }),
+    });
+    const table = agentStepTable(
+      [result('judges', [
+        step('s1', 'confirm', { api: 'agent.assert', model: judged, codegenModel: codegen, events: [event(1_000), event(5_000, 'codegen'), event(5_000, 'codegen')] }),
+        step('s2', 'act', { model: judged }),
+      ])],
+      [],
+    );
+    const [header, ...rows] = cells(table);
+    expect(header?.at(-1)).toBe('codegen');
+    expect(rows[0]?.[2]).toBe('1000ms');
+    expect(rows.map((row) => row.at(-1))).toEqual(['2 calls 300/40', '-']);
+    expect(agentStepTable([result('acts', [step('s1', 'act', { model: judged })])], [])).not.toContain('codegen');
+  });
 });

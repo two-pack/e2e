@@ -133,6 +133,19 @@ export interface ReportCodegen {
   readonly files: readonly string[];
   readonly gaps: readonly ReportCodegenGap[];
   readonly failures: readonly ReportCodegenFailure[];
+  /** The model calls the run made for judgments' checks, summed over its steps' `codegenModel`; absent when it made none. */
+  readonly usage?: ReportCodegenUsage;
+}
+
+/** What `--codegen`'s questions for judgments' checks cost a run, apart from `run.usage`. */
+export interface ReportCodegenUsage {
+  readonly calls: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  /** Input tokens served from provider prompt caches; present once any call reports the split. */
+  readonly cacheReadTokens?: number;
+  /** Present once any call reports a cost. */
+  readonly estimatedCostUsd?: number;
 }
 
 /** One test whose generated code stops where it failed, in the run the code was written from. */
@@ -244,6 +257,8 @@ export interface ReportStep {
   /** The last model turns of an agent step, oldest first. */
   turns?: readonly StepTurn[] | undefined;
   model?: StepModelInfo | undefined;
+  /** The model calls `--codegen` made for the checks that prove the step's judgment, apart from `model`. */
+  codegenModel?: StepModelInfo | undefined;
   /** The configured agent an agent step ran with, by name. */
   agent?: string | undefined;
   /** The hook the step ran in; absent for a step of the test body. */
@@ -840,7 +855,31 @@ export function buildReport(options: BuildReportOptions): Report1Document {
         discovered: summary.discovered,
       }),
       ...(options.explore === undefined ? {} : { explore: options.explore }),
-      ...(options.codegen === undefined ? {} : { codegen: options.codegen }),
+      ...(options.codegen === undefined ? {} : { codegen: withCodegenUsage(options.codegen, options.results, options.serialGroups) }),
+    },
+  };
+}
+
+/** The `run.codegen` block with the usage its steps' `codegenModel` add up to, when any step asked. */
+function withCodegenUsage(codegen: ReportCodegen, results: readonly ResultRecord[], serialGroups: readonly SerialGroupRecord[]): ReportCodegen {
+  const steps = [
+    ...results.flatMap((result) => result.attempts.flatMap((attempt) => attempt.steps)),
+    ...serialGroups.flatMap((group) => group.attempts.flatMap((attempt) => attempt.members.flatMap((member) => member.steps))),
+  ];
+  const models = steps.flatMap((step) => (step.codegenModel === undefined ? [] : [step.codegenModel]));
+  if (models.length === 0) return codegen;
+  const sum = (read: (model: StepModelInfo) => number | undefined): number | undefined =>
+    models.some((model) => read(model) !== undefined) ? models.reduce((total, model) => total + (read(model) ?? 0), 0) : undefined;
+  const cacheReadTokens = sum((model) => model.cacheReadTokens);
+  const estimatedCostUsd = sum((model) => model.estimatedCostUsd);
+  return {
+    ...codegen,
+    usage: {
+      calls: sum((model) => model.calls)!,
+      inputTokens: sum((model) => model.inputTokens)!,
+      outputTokens: sum((model) => model.outputTokens)!,
+      ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+      ...(estimatedCostUsd === undefined ? {} : { estimatedCostUsd }),
     },
   };
 }

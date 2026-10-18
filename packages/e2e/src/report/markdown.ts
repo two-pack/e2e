@@ -160,7 +160,9 @@ function agentTotals(steps: readonly ReportStep[]): { steps: number; replayed: n
 /**
  * `41 agent steps · 12 replayed from cache · 128.4k tokens (62% cached) · $0.31`,
  * under the headline of a run that used the agent; a deterministic run has
- * nothing to say here.
+ * nothing to say here. A `--codegen` run that asked for judgments' checks
+ * ends with those calls, `· 3 codegen calls ($0.0200)`, which the totals
+ * before them leave out.
  */
 function spendLine(run: ReportRun, entries: readonly Entry[]): string | undefined {
   const totals = agentTotals(entries.flatMap((entry) => entry.final.final.steps));
@@ -174,6 +176,10 @@ function spendLine(run: ReportRun, entries: readonly Entry[]): string | undefine
     parts.push(`${formatTokens(run.usage.modelTokens)} tokens${share}`);
   }
   if (run.usage.estimatedCostUsd !== undefined) parts.push(formatCost(run.usage.estimatedCostUsd));
+  const codegen = run.codegen?.usage;
+  if (codegen !== undefined) {
+    parts.push(`${plural(codegen.calls, 'codegen call')}${codegen.estimatedCostUsd === undefined ? '' : ` (${formatCost(codegen.estimatedCostUsd)})`}`);
+  }
   return parts.join(' · ');
 }
 

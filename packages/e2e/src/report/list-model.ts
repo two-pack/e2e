@@ -45,7 +45,7 @@ export interface CurrentStep {
 /** One finished agent step of a pair, as the `end` progress reported it. */
 export type FinishedStep = Pick<
   Extract<StepProgress, { phase: 'end' }>,
-  'api' | 'label' | 'status' | 'durationMs' | 'modelCalls'
+  'api' | 'label' | 'status' | 'durationMs' | 'modelCalls' | 'codegenCalls'
 >;
 
 /** A pair that has started and whose result is still to come. */

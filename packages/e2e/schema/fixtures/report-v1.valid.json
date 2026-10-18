@@ -109,6 +109,17 @@
                     "reasoning": "A modal blocks the checkout button; closing it before continuing."
                   },
                   {
+                    "kind": "model",
+                    "startedAt": "2026-07-24T12:00:03.100Z",
+                    "durationMs": 900,
+                    "status": "passed",
+                    "name": "agent-codegen-checks-1",
+                    "count": 160,
+                    "inputTokens": 140,
+                    "outputTokens": 20,
+                    "purpose": "codegen"
+                  },
+                  {
                     "kind": "engine",
                     "startedAt": "2026-07-24T12:00:03.000Z",
                     "durationMs": 27,
@@ -139,6 +150,18 @@
                   "observationBytes": 512,
                   "contextBytes": 0,
                   "ledgerBytes": 0
+                },
+                "codegenModel": {
+                  "provider": "example",
+                  "model": "model-A",
+                  "endpoint": "provider-default",
+                  "adapterVersion": "1",
+                  "policyVersion": "policy-0.3",
+                  "calls": 1,
+                  "tokenAccounting": "provider",
+                  "peakTokensPerCall": 160,
+                  "inputTokens": 140,
+                  "outputTokens": 20
                 },
                 "cache": {
                   "mode": "missed",
@@ -637,6 +660,7 @@
     "codegen": {
       "dir": "e2e-gen",
       "files": ["e2e-gen/tests/example.gen.spec.ts"],
+      "usage": { "calls": 1, "inputTokens": 140, "outputTokens": 20 },
       "gaps": [
         {
           "file": "e2e-gen/tests/example.gen.spec.ts",

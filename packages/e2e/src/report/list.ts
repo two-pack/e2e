@@ -660,8 +660,8 @@ export class ListReporter implements Reporter {
           this.window.redraw();
           break;
         }
-        const { api, label, status, durationMs, modelCalls } = progress;
-        const step = { api, label, status, durationMs, modelCalls };
+        const { api, label, status, durationMs, modelCalls, codegenCalls } = progress;
+        const step = { api, label, status, durationMs, modelCalls, ...(codegenCalls === undefined ? {} : { codegenCalls }) };
         // An exploration's planner and charter steps show as the exploration's own rows.
         if (this.explore !== undefined) break;
         if (this.live) {
@@ -1126,9 +1126,11 @@ export class ListReporter implements Reporter {
     }
     if (event.codegen !== undefined) {
       const files = event.codegen.files;
+      const calls = event.codegen.modelCalls;
       this.print(
         padTitle(pc, 'Code') +
-          `${this.displayPath(event.codegen.dir)} ${pc.dim(`(${String(files)} ${files === 1 ? 'file' : 'files'})`)}`,
+          `${this.displayPath(event.codegen.dir)} ${pc.dim(`(${String(files)} ${files === 1 ? 'file' : 'files'})`)}` +
+          (calls === undefined ? '' : ` · ${String(calls)} model call${calls === 1 ? '' : 's'}`),
       );
     }
     this.print('');

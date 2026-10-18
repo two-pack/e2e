@@ -411,6 +411,8 @@ export function runCompletedEvent(report: Report1Document, context: RunContext):
       model_cached_tokens: run.usage.modelCachedTokens ?? null,
       estimated_cost_usd: run.usage.estimatedCostUsd ?? null,
       cost_source: costSource(run.usage, models.length),
+      codegen_model_calls: run.codegen?.usage?.calls ?? 0,
+      codegen_model_tokens: run.codegen === undefined || run.codegen.usage === undefined ? 0 : run.codegen.usage.inputTokens + run.codegen.usage.outputTokens,
       artifact_bytes: run.usage.artifactBytes,
       errors: run.errors.length,
       primary_error_code: primary === undefined ? null : errorCodeToken(primary.code),

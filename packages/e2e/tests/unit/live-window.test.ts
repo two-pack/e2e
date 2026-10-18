@@ -200,6 +200,11 @@ describe('eventLine', () => {
   it('keeps an excerpt that fits the row in columns whole', () => {
     expect(eventLine(pc, turn('日'.repeat(19)), { maxWidth: 60 })).toBe(`• Thinking (1.20s) · ${'日'.repeat(19)}`);
   });
+
+  it("names the turn --codegen asks for a judgment's checks apart from the judgment's own", () => {
+    const asked = { ...turn('the counter reads 1'), purpose: 'codegen' } as ShownEvent;
+    expect(eventLine(pc, asked)).toBe('• Writing checks (1.20s) · the counter reads 1');
+  });
 });
 
 describe('ExploreView', () => {

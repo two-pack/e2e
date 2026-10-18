@@ -299,10 +299,11 @@ interface CheckContext {
  */
 async function deriveCodegenChecks(runtime: AgentContext, codegen: CodegenLog, request: CodegenChecksRequest): Promise<DerivedChecks | undefined> {
   const { seen } = codegen;
+  let invocation: Invocation | undefined;
   try {
     // A custom executor may run with no model at all; then there is no one to ask.
     if (runtime.select(request.agent).config.judge === undefined) return undefined;
-    const invocation = new Invocation(runtime, {
+    invocation = new Invocation(runtime, {
       api: request.api,
       agent: request.agent,
       label: request.instruction,
@@ -310,6 +311,7 @@ async function deriveCodegenChecks(runtime: AgentContext, codegen: CodegenLog, r
       timeoutMs: request.timeoutMs,
       maxModelCalls: CHECKS_MODEL_CALLS,
       vision: false,
+      purpose: 'codegen',
     });
     const observation = request.observation ?? (await invocation.observe());
     if (observation.kind !== 'semantic') return undefined;
@@ -369,6 +371,9 @@ async function deriveCodegenChecks(runtime: AgentContext, codegen: CodegenLog, r
     // The checks are a by-product of a verdict already reached; a failed
     // question costs the generated code its assertion, never the test.
     return undefined;
+  } finally {
+    // A call that ended in no checks was still spent, so it is counted whatever became of it.
+    invocation?.finishCodegen();
   }
 }
 

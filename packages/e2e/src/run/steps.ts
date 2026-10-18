@@ -52,6 +52,12 @@ export interface StepEvent {
   decision?: 'allowed' | 'denied';
   code?: string;
   /**
+   * `codegen` on a `model` or `schema` event of the question `--codegen`
+   * asks after a judgment passed, for the checks that prove it; absent on
+   * the step's own model calls.
+   */
+  purpose?: 'codegen';
+  /**
    * Redacted human prose for what the event did — `tap button "Approve"`,
    * `fill secret "password" into textbox "Password"`. Driver action events
    * carry one so a live reporter can render the act without a side lookup;
@@ -153,6 +159,7 @@ export type StepCacheRecord = StepCacheInfo & {
 export interface StepAgentDetails {
   metrics?: StepMetrics;
   model?: StepModelInfo;
+  codegenModel?: StepModelInfo;
   cache?: StepCacheInfo;
   /** Absent when the step failed before capturing an observation. */
   observationRevision?: string;
@@ -208,6 +215,8 @@ export interface StepRecord {
   /** The model turns of an agent step, most recent last, bounded. */
   turns?: StepTurn[];
   model?: StepModelInfo;
+  /** The model calls `--codegen` made for the checks that prove the step's judgment; absent when it asked none. */
+  codegenModel?: StepModelInfo;
   /** The configured agent an agent step ran with, by name. */
   agent?: string;
   /** The hook the step ran in; absent for a step of the test body. */
@@ -247,7 +256,10 @@ type StepProgressFact =
       readonly label: string;
       readonly status: StepRecord['status'];
       readonly durationMs: number;
+      /** The step's own model calls, `--codegen`'s question left out. */
       readonly modelCalls: number;
+      /** The model calls `--codegen` made for the checks that prove the step's judgment; absent when it asked none. */
+      readonly codegenCalls?: number;
       /** The same redacted error the finished step records. */
       readonly error?: SerializedError;
       readonly explanation?: string;
@@ -552,7 +564,8 @@ export class StepRecorder {
       label: record.label,
       status: record.status,
       durationMs: record.durationMs,
-      modelCalls: record.events.filter((event) => event.kind === 'model').length,
+      modelCalls: record.events.filter((event) => event.kind === 'model' && event.purpose === undefined).length,
+      ...codegenCallsOf(record),
       ...(record.error === undefined ? {} : { error: record.error }),
       ...(record.explanation === undefined ? {} : { explanation: record.explanation }),
     });
@@ -681,6 +694,7 @@ export class StepRecorder {
     if (current === undefined) return;
     if (details.metrics !== undefined) current.metrics = details.metrics;
     if (details.model !== undefined) current.model = details.model;
+    if (details.codegenModel !== undefined) current.codegenModel = details.codegenModel;
     if (details.cache !== undefined) current.cache = details.cache;
     if (details.observationRevision !== undefined) {
       current.observationRevision = details.observationRevision;
@@ -726,4 +740,10 @@ export class StepRecorder {
       },
     });
   }
+}
+
+/** The `codegenCalls` of a finished step's progress: the `--codegen` question's model calls, when it made any. */
+function codegenCallsOf(record: StepRecord): { codegenCalls?: number } {
+  const calls = record.events.filter((event) => event.kind === 'model' && event.purpose === 'codegen').length;
+  return calls === 0 ? {} : { codegenCalls: calls };
 }

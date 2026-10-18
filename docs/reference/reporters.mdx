@@ -321,8 +321,9 @@ type RunEventFact =
   with `⚠` in place of `ℹ`.
 - `output` is one write a test made to stdout or stderr; `pair` names the
   test running at the time and is undefined between tests.
-- `codegen` on `run-finished` names where `--codegen` writes and how many
-  files this run wrote.
+- `codegen` on `run-finished` names where `--codegen` writes, how many
+  files this run wrote, and `modelCalls`, the calls it made for judgments'
+  checks, when it made any.
 - `test-finished` carries the full result record, including every attempt's
   artifacts.
 - `explore` appears only in an `e2e explore` run: `started`, `planning`,
@@ -367,6 +368,7 @@ type StepProgress = (
       status: 'passed' | 'failed' | 'blocked' | 'timed-out' | 'cancelled';
       durationMs: number;
       modelCalls: number;
+      codegenCalls?: number;
       error?: SerializedError;
       explanation?: string;
     }
@@ -375,6 +377,11 @@ type StepProgress = (
   | { phase: 'replay'; api: string; active: boolean }
 ) & { identity?: StepProgressIdentity };
 ```
+
+An `end` phase's `modelCalls` counts the step's own model calls.
+`codegenCalls`, present only when `--codegen` asked for the checks that
+prove the step's judgment, counts those; the step's `model` events for them
+carry `purpose: 'codegen'`.
 
 An `end` phase's `error` and `explanation` are redacted. Keep its `status`,
 including `blocked` and `cancelled`. Do not treat every non-passed step as a

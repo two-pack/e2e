@@ -13,7 +13,9 @@ import { stepModelLabel } from './format.ts';
 /**
  * Renders one aligned table of every agent step in the run, in execution
  * order, with per-phase splits summed from the step's child events. Returns
- * the empty string when the run performed no agent steps.
+ * the empty string when the run performed no agent steps. The columns are the
+ * step's own work; the calls `--codegen` made for a judgment's checks get a
+ * `codegen` column of their own, in a run that made any.
  */
 export function agentStepTable(
   results: readonly ResultRecord[],
@@ -24,6 +26,7 @@ export function agentStepTable(
 
   const models = new Set(steps.map(viaLabel).filter((model): model is string => model !== undefined));
   const mixedModels = models.size > 1;
+  const codegen = steps.some((step) => step.codegenModel !== undefined);
 
   const rows = steps.map((step) => [
     truncate(step.label === '' ? step.api : `${step.api} ${JSON.stringify(step.label)}`, 64),
@@ -36,6 +39,7 @@ export function agentStepTable(
     `${String(step.model?.inputTokens ?? 0)}/${String(step.model?.outputTokens ?? 0)}`,
     cachedShare(step),
     step.model?.estimatedCostUsd === undefined ? '-' : formatUsd(step.model.estimatedCostUsd),
+    ...(codegen ? [codegenCell(step)] : []),
   ]);
 
   const knownCosts = steps
@@ -62,6 +66,7 @@ export function agentStepTable(
       'tokens in/out',
       'cached',
       'cost',
+      ...(codegen ? ['codegen'] : []),
     ],
     rows,
     '(no agent steps recorded)',
@@ -94,9 +99,18 @@ function collectAgentSteps(
   return steps;
 }
 
+/** `2 calls 300/40 $0.0012`: what `--codegen` asked after the step's judgment passed; `-` when it asked nothing. */
+function codegenCell(step: StepRecord): string {
+  const model = step.codegenModel;
+  if (model === undefined) return '-';
+  const cost = model.estimatedCostUsd === undefined ? '' : ` ${formatUsd(model.estimatedCostUsd)}`;
+  return `${String(model.calls)} ${model.calls === 1 ? 'call' : 'calls'} ${String(model.inputTokens)}/${String(model.outputTokens)}${cost}`;
+}
+
+/** The time the step's own events of a kind took, `--codegen`'s question left out. */
 function eventMs(step: StepRecord, kind: 'model' | 'observation' | 'engine'): number {
   return step.events
-    .filter((event) => event.kind === kind)
+    .filter((event) => event.kind === kind && event.purpose === undefined)
     .reduce((total, event) => total + event.durationMs, 0);
 }
 

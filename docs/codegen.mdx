@@ -161,7 +161,12 @@ is not at the URL the e2e target used.
 The extra question costs one judge call for each passing judgment, and only
 in a `--codegen` run. It never changes a test's result: when it fails, the
 call is written as a `throw` that names it, and you write the `expect` by
-hand.
+hand. Its calls are counted apart from the judgment's own: the `list`
+reporter shows them on the step as `1 codegen call` and their total on the
+`Code` row, and `report.json` keeps them under each step's `codegenModel`
+and, summed with their tokens and cost, under `run.codegen.usage`. The `AI`
+row, a step's `metrics.modelCalls` and `model`, and `run.usage` leave them
+out.
 
 ### Checking that something is not shown
 

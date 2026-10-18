@@ -575,7 +575,9 @@ declared one.
 `--debug` appends two tables to stderr. Phase timings are summed across the
 runner and every worker. The agent step table lists every agent step in
 execution order: its per-phase split, model calls, tokens, and cost when the
-provider reported one.
+provider reported one. In a `--codegen` run that asked for a judgment's
+checks, a last `codegen` column shows those calls, tokens, and cost, which
+the other columns leave out.
 
 ```console
 $ npx e2e run --debug
@@ -653,12 +655,13 @@ With `--codegen`, the run keeps one generated file per e2e file under
 [`codegen.outDir`](/reference/config#codegen) (`e2e-gen/` by default), and
 what each test last recorded under `<output>/codegen/`. Each passing judgment
 costs one more judge call, unless the checks it made last time still hold.
-The `list` reporter prints a `Code` row with the directory and the number of
-files written, and a warning for each judgment the code proves only in part
-and each test whose code stops at a failure. `report.json` gains
-`run.codegen`: the directory, the files written, and those judgments and
+The `list` reporter prints a `Code` row with the directory, the number of
+files written, and the model calls those judge calls took, and a warning for
+each judgment the code proves only in part and each test whose code stops at
+a failure; the `AI` row leaves those calls out. `report.json` gains
+`run.codegen`: the directory, the files written, those judgments and
 failures under `gaps` and `failures`, a test this run did not refresh marked
-`carried`. A target whose engine writes no code gets a notice. See
+`carried`, and the judge calls' count, tokens, and cost under `usage`. A target whose engine writes no code gets a notice. See
 [Export to Playwright](/codegen).
 
 <a id="watch-mode" />

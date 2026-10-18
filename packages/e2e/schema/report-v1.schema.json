@@ -198,6 +198,10 @@
         "decision": { "enum": ["allowed", "denied"] },
         "code": { "type": "string", "maxLength": 128 },
         "detail": { "type": "string", "maxLength": 300 },
+        "purpose": {
+          "description": "codegen on a model or schema event of the question e2e run --codegen asks after a judgment passed, for the checks that prove it; absent on the step's own events.",
+          "const": "codegen"
+        },
         "reasoning": { "type": "string", "maxLength": 600 },
         "extensions": { "$ref": "#/$defs/extensions" }
       }
@@ -343,6 +347,10 @@
         "events": { "type": "array", "items": { "$ref": "#/$defs/event" } },
         "turns": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/turn" } },
         "model": { "$ref": "#/$defs/model" },
+        "codegenModel": {
+          "description": "The model calls e2e run --codegen made for the checks that prove the step's judgment, apart from model and metrics.modelCalls; absent when it asked none.",
+          "$ref": "#/$defs/model"
+        },
         "agent": { "type": "string", "minLength": 1 },
         "phase": { "enum": ["beforeEach", "afterEach"] },
         "screen": { "$ref": "#/$defs/stepScreen" },
@@ -779,7 +787,7 @@
       }
     },
     "codegen": {
-      "description": "What e2e run --codegen keeps in step: the directory the generated code goes to (codegen.outDir) and the files written in this run, project-root relative, every judgment the generated code does not prove whole, and every test whose code stops where it failed, written in this run or kept from an earlier one (carried). Present only on a run that asked for code and reached its tests.",
+      "description": "What e2e run --codegen keeps in step: the directory the generated code goes to (codegen.outDir) and the files written in this run, project-root relative, every judgment the generated code does not prove whole, every test whose code stops where it failed, written in this run or kept from an earlier one (carried), and what asking for judgments' checks cost (usage, the steps' codegenModel summed, which run.usage leaves out; absent when the run asked none). Present only on a run that asked for code and reached its tests.",
       "type": "object",
       "additionalProperties": false,
       "required": ["dir", "files", "gaps", "failures"],
@@ -787,7 +795,19 @@
         "dir": { "type": "string", "minLength": 1 },
         "files": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "gaps": { "type": "array", "items": { "$ref": "#/$defs/codegenGap" } },
-        "failures": { "type": "array", "items": { "$ref": "#/$defs/codegenFailure" } }
+        "failures": { "type": "array", "items": { "$ref": "#/$defs/codegenFailure" } },
+        "usage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["calls", "inputTokens", "outputTokens"],
+          "properties": {
+            "calls": { "type": "integer", "minimum": 1 },
+            "inputTokens": { "type": "integer", "minimum": 0 },
+            "outputTokens": { "type": "integer", "minimum": 0 },
+            "cacheReadTokens": { "type": "integer", "minimum": 0 },
+            "estimatedCostUsd": { "type": "number", "minimum": 0 }
+          }
+        }
       }
     },
     "codegenFailure": {

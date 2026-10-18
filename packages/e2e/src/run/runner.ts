@@ -695,7 +695,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       ...(reportPath === undefined ? {} : { reportPath }),
       ...(aiTracePath === undefined ? {} : { aiTracePath }),
       ...(traces.size === 0 ? {} : { traces: Object.fromEntries(traces) }),
-      ...(codegenOutput === undefined ? {} : { codegen: { dir: codegenOutput.dir, files: codegenOutput.files.length } }),
+      ...(codegenOutput === undefined ? {} : { codegen: codegenFinished(codegenOutput, report.run.codegen?.usage?.calls) }),
     });
     // The list reporter has printed its summary and stopped its window; a
     // line another reporter left unfinished on `run-finished` prints too.
@@ -1274,6 +1274,11 @@ async function loadRunConfig(
     env,
     cli,
   });
+}
+
+/** The `codegen` of `run-finished`: where the code went, how many files, and the calls made for judgments' checks when there were any. */
+function codegenFinished(output: CodegenOutput, modelCalls: number | undefined): { dir: string; files: number; modelCalls?: number } {
+  return { dir: output.dir, files: output.files.length, ...(modelCalls === undefined ? {} : { modelCalls }) };
 }
 
 /**

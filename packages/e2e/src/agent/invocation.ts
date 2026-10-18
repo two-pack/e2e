@@ -143,6 +143,12 @@ export interface InvocationOptions {
    * call.
    */
   readonly vision: VisionMode;
+  /**
+   * `codegen` for the question `--codegen` asks after a judgment passed: its
+   * events carry the mark, and `finishCodegen` records its calls apart from
+   * the step's own.
+   */
+  readonly purpose?: 'codegen';
 }
 
 /**
@@ -363,7 +369,7 @@ export class Invocation {
       const images = imagesFor(request.prompt.observation);
       try {
         const result = await this.instrument(
-          { kind: 'model', phase: 'agent.model', name: request.schemaName },
+          { kind: 'model', phase: 'agent.model', name: request.schemaName, ...this.purposeField() },
           () =>
             this.adapter.generate({
               system: this.system,
@@ -413,6 +419,7 @@ export class Invocation {
       status: 'failed',
       name,
       code: 'MODEL_OUTPUT_INVALID',
+      ...this.purposeField(),
     });
   }
 
@@ -480,6 +487,20 @@ export class Invocation {
       ...(this.treeWithheld ? { visionOnly: true } : {}),
       ...(this.visionDegraded !== undefined ? { visionDegraded: this.visionDegraded } : {}),
     });
+  }
+
+  /**
+   * Records the calls of `--codegen`'s question on the enclosing step, apart
+   * from the step's own metrics and model, which `finish` writes. Nothing
+   * when it made no call.
+   */
+  finishCodegen(): void {
+    if (this.metrics.modelCalls > 0) this.runtime.steps.attachAgentDetails({ codegenModel: this.modelInfo() });
+  }
+
+  /** The mark an event of this invocation carries, when it has a purpose. */
+  private purposeField(): Pick<StepEvent, 'purpose'> {
+    return this.options.purpose === undefined ? {} : { purpose: this.options.purpose };
   }
 
   private modelInfo(): StepModelInfo {

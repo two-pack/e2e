@@ -199,6 +199,8 @@ describe('--codegen on the in-process transport', () => {
   let executor: StepExecutor;
   let model: ModelInstance;
   const warnings: string[] = [];
+  /** The `end` progress of every agent step, by its label. */
+  const ended = new Map<string, { modelCalls: number; codegenCalls?: number }>();
 
   beforeAll(async () => {
     app = await startFixtureApp();
@@ -212,6 +214,7 @@ describe('--codegen on the in-process transport', () => {
         codegen: true,
         onEvent: (event) => {
           if (event.type === 'notice' && event.level === 'warning') warnings.push(event.message);
+          if (event.type === 'step' && event.progress.phase === 'end' && event.progress.kind === 'agent') ended.set(event.progress.label, event.progress);
         },
       },
     });
@@ -324,6 +327,21 @@ describe('--codegen on the in-process transport', () => {
       ].join('\n'),
     );
     expect(code).toMatch(/ {2}\/\/ {3}Screenshot of the screen it passed on: \.e2e\/results\/\S+\.png\n {2}await expect\(page\.getByRole\("button", \{ name: "Increment", exact: true \}\)\)\.toHaveCount\(0\);/u);
+  });
+
+  it("counts the checks question's calls apart from the judgment's own, on the step, its progress, and the run", () => {
+    const steps = outcome.report.run.results.flatMap((result) => result.attempts.flatMap((attempt) => attempt.steps));
+    const step = steps.find((candidate) => candidate.api === 'agent.assert' && candidate.label === 'the counter shows 1')!;
+    // The tapping executor judged without a model; only the checks question called one.
+    expect(step.metrics?.modelCalls).toBe(0);
+    expect(step.model).toBeUndefined();
+    expect(step.codegenModel?.calls).toBe(1);
+    expect(step.events.filter((event) => event.kind === 'model').map((event) => event.purpose)).toEqual(['codegen']);
+    expect(ended.get('the counter shows 1')).toMatchObject({ modelCalls: 0, codegenCalls: 1 });
+    expect(ended.get('increment the counter once')?.codegenCalls).toBeUndefined();
+    const asked = steps.reduce((total, candidate) => total + (candidate.codegenModel?.calls ?? 0), 0);
+    expect(asked).toBeGreaterThan(1);
+    expect(outcome.report.run.codegen?.usage?.calls).toBe(asked);
   });
 
   it('checks that an unnamed list an earlier screen showed is gone, by its role alone', () => {
@@ -546,6 +564,19 @@ export default {
     outcome = result.outcome;
     project = result.project;
   }, 180_000);
+
+  it("brings the checks question's calls back from the workers apart from the judgment's own", () => {
+    const steps = outcome.report.run.results.flatMap((result) => result.attempts.flatMap((attempt) => attempt.steps));
+    const judged = steps.filter((step) => step.api === 'agent.assert' && step.label === 'the counter shows 1');
+    expect(judged.length).toBeGreaterThan(0);
+    for (const step of judged) {
+      expect(step.metrics?.modelCalls).toBe(0);
+      expect(step.codegenModel?.calls).toBe(1);
+      expect(step.events.filter((event) => event.kind === 'model').map((event) => event.purpose)).toEqual(['codegen']);
+    }
+    const asked = steps.reduce((total, step) => total + (step.codegenModel?.calls ?? 0), 0);
+    expect(outcome.report.run.codegen?.usage?.calls).toBe(asked);
+  });
 
   afterAll(async () => {
     project?.cleanup();
