@@ -34,6 +34,20 @@ test('opens the about page', async ({ app, screen }) => {
 });
 `;
 
+/**
+ * An e2e file that imports a helper by a relative path: its generated file
+ * keeps the import, which points nowhere from the generated folder, so the
+ * file never loads. It must not keep the other file's tests from their code.
+ */
+const HELPED_SUITE = `import { test, expect } from 'e2e';
+import { aboutPath } from './paths.ts';
+
+test('opens the about page through a helper', async ({ app, screen }) => {
+  await app.open(aboutPath);
+  await expect(screen.getByRole('heading', { level: 1 })).toBeVisible();
+});
+`;
+
 /** Taps Increment once per act and passes every judgment, with no model; counts the steps it was given. */
 const EXECUTOR_MODULE = `export const tapper = {
   name: 'tapper',
@@ -74,7 +88,12 @@ describe('--codegen runs a test from its generated code', () => {
 
   beforeAll(async () => {
     app = await startFixtureApp();
-    project = createProject({ 'tests/counter.e2e.ts': SUITE, 'tapper.ts': EXECUTOR_MODULE });
+    project = createProject({
+      'tests/counter.e2e.ts': SUITE,
+      'tests/helped.e2e.ts': HELPED_SUITE,
+      'tests/paths.ts': "export const aboutPath = '/about';\n",
+      'tapper.ts': EXECUTOR_MODULE,
+    });
     mkdirSync(path.join(project.dir, 'node_modules', '@playwright'), { recursive: true });
     symlinkSync(PLAYWRIGHT_TEST, path.join(project.dir, 'node_modules', '@playwright', 'test'), 'dir');
     executor = ((await import(path.join(project.dir, 'tapper.ts'))) as { tapper: StepExecutor }).tapper;
@@ -83,6 +102,7 @@ describe('--codegen runs a test from its generated code', () => {
     expect(first.outcome.results.map((result) => [result.test.title, result.status])).toEqual([
       ['increments through the agent', 'passed'],
       ['opens the about page', 'passed'],
+      ['opens the about page through a helper', 'passed'],
     ]);
   }, 120_000);
 
@@ -115,17 +135,24 @@ describe('--codegen runs a test from its generated code', () => {
     const before = readFileSync(path.join(project.dir, SPEC), 'utf8');
     const { outcome, events, agentSteps } = await codegenRun();
     expect(agentSteps).toBe(0);
-    expect(outcome.results.map((result) => [result.test.title, result.status, result.attempts[0]?.steps.length])).toEqual([
-      ['increments through the agent', 'passed', 0],
-      ['opens the about page', 'passed', 0],
+    const steps = (title: string) => resultByTitle(outcome, title).attempts[0]?.steps.length;
+    expect(['increments through the agent', 'opens the about page'].map((title) => [resultByTitle(outcome, title).status, steps(title)])).toEqual([
+      ['passed', 0],
+      ['passed', 0],
     ]);
-    expect(outcome.report.run.codegen?.ran?.map((entry) => [entry.test, entry.status, entry.file])).toEqual([
+    // The file that cannot load runs on its own and goes to the agent; the other's tests still passed from code.
+    expect(resultByTitle(outcome, 'opens the about page through a helper').status).toBe('passed');
+    expect(steps('opens the about page through a helper')).toBeGreaterThan(0);
+    const ran = outcome.report.run.codegen?.ran ?? [];
+    expect(ran.map((entry) => [entry.test, entry.status, entry.file])).toEqual([
       ['increments through the agent', 'passed', 'e2e-gen/tests/counter.gen.spec.ts'],
       ['opens the about page', 'passed', 'e2e-gen/tests/counter.gen.spec.ts'],
+      ['opens the about page through a helper', 'not-run', 'e2e-gen/tests/helped.gen.spec.ts'],
     ]);
+    expect(ran[2]!.reason).toContain('paths');
     expect(readFileSync(path.join(project.dir, SPEC), 'utf8')).toBe(before);
     const end = finished(events);
-    expect(end?.type === 'run-finished' ? end.codegen?.fromCode : undefined).toEqual({ passed: 2, toAgent: 0 });
+    expect(end?.type === 'run-finished' ? end.codegen?.fromCode : undefined).toEqual({ passed: 2, toAgent: 1 });
     expect(events.some((event) => event.type === 'setup' && event.step.kind === 'code' && event.state === 'finished')).toBe(true);
   }, 120_000);
 
@@ -148,12 +175,13 @@ describe('--codegen runs a test from its generated code', () => {
     expect(ran.map((entry) => [entry.test, entry.status])).toEqual([
       ['increments through the agent', 'failed'],
       ['opens the about page', 'passed'],
+      ['opens the about page through a helper', 'not-run'],
     ]);
     expect(ran[0]!.reason).toContain('Add one');
     expect(readFileSync(path.join(project.dir, SPEC), 'utf8')).toBe(good);
-    expect(events.some((event) => event.type === 'notice' && event.message.includes('the generated code did not pass 1 test of target "web"'))).toBe(true);
+    expect(events.some((event) => event.type === 'notice' && event.message.includes('the generated code did not pass 2 tests of target "web"'))).toBe(true);
     const end = finished(events);
-    expect(end?.type === 'run-finished' ? end.codegen?.fromCode : undefined).toEqual({ passed: 1, toAgent: 1 });
+    expect(end?.type === 'run-finished' ? end.codegen?.fromCode : undefined).toEqual({ passed: 1, toAgent: 2 });
   }, 120_000);
 
   it('runs every test on the agent, with one notice, when the project has no @playwright/test', async () => {
@@ -164,6 +192,7 @@ describe('--codegen runs a test from its generated code', () => {
     expect(outcome.report.run.codegen?.ran?.map((entry) => [entry.test, entry.status])).toEqual([
       ['increments through the agent', 'not-run'],
       ['opens the about page', 'not-run'],
+      ['opens the about page through a helper', 'not-run'],
     ]);
     const notices = events.flatMap((event) => (event.type === 'notice' && event.message.includes('ran no generated code') ? [event.message] : []));
     expect(notices).toEqual([

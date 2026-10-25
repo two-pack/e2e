@@ -400,6 +400,9 @@ that overrides the secret in the e2e config, the same one the helpers read.
   `NOTE` above its calls.
 - A member of a `test.describe.serial` group and an [`e2e explore`](/explore)
   run are not recorded.
+- An import by a relative path (`./paths.ts`) is kept as written, so from
+  `codegen.outDir` it points nowhere. That file fails to load, and its tests
+  run on the agent, while the other files still run from code.
 
 When the test file cannot be read or parsed, the run writes the recorded
 steps alone, one Playwright test per passing test.

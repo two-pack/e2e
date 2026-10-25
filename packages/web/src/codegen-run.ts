@@ -34,6 +34,9 @@ const MAX_DIAGNOSTIC_LENGTH = 1_000;
  * Runs the requested tests of the generated files with Playwright Test and
  * returns how each ended. `unavailable` when `@playwright/test` cannot be
  * found from the project, its browser is not installed, or it wrote no report.
+ * One file that fails to load stops Playwright Test from running any test, so
+ * when that happens with several files, each file runs again on its own and
+ * only the broken one's tests go to the agent.
  */
 export async function runGeneratedCode(request: CodegenRunRequest, use: CodegenRunUse): Promise<CodegenRunResult> {
   const cli = resolveCli(request.projectRoot);
@@ -43,14 +46,36 @@ export async function runGeneratedCode(request: CodegenRunRequest, use: CodegenR
       reason: '@playwright/test is not installed in the project; add it as a dev dependency to run the generated code',
     };
   }
-  await mkdir(request.workDir, { recursive: true });
-  const rootDir = commonDir(request.files.map((file) => path.dirname(file.path)));
-  const reportFile = path.join(request.workDir, 'report.json');
-  const configFile = path.join(request.workDir, 'playwright.config.mjs');
-  const listFile = path.join(request.workDir, 'tests.txt');
+  const together = await runFiles(cli, request, request.files, use, request.workDir);
+  if (together.kind !== 'ran' || together.notRun === undefined || together.tests.length > 0 || request.files.length < 2) return together;
+  const tests: CodegenRunOutcome[] = [];
+  const reasons: string[] = [];
+  for (const [index, file] of request.files.entries()) {
+    if (request.signal.aborted) break;
+    const alone = await runFiles(cli, request, [file], use, path.join(request.workDir, `file-${String(index)}`));
+    if (alone.kind === 'unavailable') return alone;
+    tests.push(...alone.tests);
+    if (alone.notRun !== undefined) reasons.push(alone.notRun);
+  }
+  return { kind: 'ran', tests, ...(reasons.length === 0 ? {} : { notRun: clip(reasons.join('\n')) }) };
+}
+
+/** One Playwright Test run of these files' requested tests, its config, list, and report under `workDir`. */
+async function runFiles(
+  cli: string,
+  request: CodegenRunRequest,
+  files: CodegenRunRequest['files'],
+  use: CodegenRunUse,
+  workDir: string,
+): Promise<CodegenRunResult> {
+  await mkdir(workDir, { recursive: true });
+  const rootDir = commonDir(files.map((file) => path.dirname(file.path)));
+  const reportFile = path.join(workDir, 'report.json');
+  const configFile = path.join(workDir, 'playwright.config.mjs');
+  const listFile = path.join(workDir, 'tests.txt');
   const wanted = new Map<string, string>();
   const lines: string[] = [];
-  for (const file of request.files) {
+  for (const file of files) {
     const relative = toPosix(path.relative(rootDir, file.path));
     for (const test of file.tests) {
       // A title the list cannot spell is left out: the test goes to the agent.
@@ -61,7 +86,7 @@ export async function runGeneratedCode(request: CodegenRunRequest, use: CodegenR
   }
   if (lines.length === 0) return { kind: 'ran', tests: [], notRun: 'no title of these tests can be named to Playwright Test' };
   await writeFile(listFile, `${lines.join('\n')}\n`);
-  await writeFile(configFile, configSource({ rootDir, reportFile, outputDir: path.join(request.workDir, 'output'), request, use }));
+  await writeFile(configFile, configSource({ rootDir, reportFile, outputDir: path.join(workDir, 'output'), request, use }));
   const exit = await runCli(cli, ['test', '--config', configFile, '--test-list', listFile], request);
   const text = await readFile(reportFile, 'utf8').catch(() => undefined);
   if (text === undefined) {
