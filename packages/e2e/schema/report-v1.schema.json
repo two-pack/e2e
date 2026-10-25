@@ -787,7 +787,7 @@
       }
     },
     "codegen": {
-      "description": "What e2e run --codegen keeps in step: the directory the generated code goes to (codegen.outDir) and the files written in this run, project-root relative, every judgment the generated code does not prove whole, every test whose code stops where it failed, written in this run or kept from an earlier one (carried), and what asking for judgments' checks cost (usage, the steps' codegenModel summed, which run.usage leaves out; absent when the run asked none). Present only on a run that asked for code and reached its tests.",
+      "description": "What e2e run --codegen keeps in step: the directory the generated code goes to (codegen.outDir) and the files written in this run, project-root relative, every judgment the generated code does not prove whole, every test whose code stops where it failed, written in this run or kept from an earlier one (carried), the tests the run gave to their generated code before the agent (ran, absent when it gave none), and what asking for judgments' checks cost (usage, the steps' codegenModel summed, which run.usage leaves out; absent when the run asked none). Present only on a run that asked for code and reached its tests.",
       "type": "object",
       "additionalProperties": false,
       "required": ["dir", "files", "gaps", "failures"],
@@ -796,6 +796,7 @@
         "files": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "gaps": { "type": "array", "items": { "$ref": "#/$defs/codegenGap" } },
         "failures": { "type": "array", "items": { "$ref": "#/$defs/codegenFailure" } },
+        "ran": { "type": "array", "items": { "$ref": "#/$defs/codegenRun" } },
         "usage": {
           "type": "object",
           "additionalProperties": false,
@@ -846,6 +847,21 @@
         "screenshot": { "type": "string", "minLength": 1 },
         "screenshotWithheld": { "type": "string", "minLength": 1 },
         "carried": { "const": true }
+      }
+    },
+    "codegenRun": {
+      "description": "One test a --codegen run gave to its generated code before the agent: passed when the code passed it and the result is the code's; failed when the code failed and the agent ran the test instead; not-run when the code could not run it and the agent ran it instead. reason says why the code failed or did not run, redacted.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "test", "target", "file", "status"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1 },
+        "test": { "type": "string" },
+        "target": { "type": "string", "minLength": 1 },
+        "file": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["passed", "failed", "not-run"] },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "reason": { "type": "string", "maxLength": 2000 }
       }
     },
     "explore": {

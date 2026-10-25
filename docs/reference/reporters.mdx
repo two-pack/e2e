@@ -322,8 +322,13 @@ type RunEventFact =
 - `output` is one write a test made to stdout or stderr; `pair` names the
   test running at the time and is undefined between tests.
 - `codegen` on `run-finished` names where `--codegen` writes, how many
-  files this run wrote, and `modelCalls`, the calls it made for judgments'
-  checks, when it made any.
+  files this run wrote, `modelCalls`, the calls it made for judgments'
+  checks, when it made any, and `fromCode: { passed, toAgent }`, when it
+  ran tests from their generated code: how many passed there and how many
+  went to the agent.
+- A `setup` step of kind `code` (`{ kind: 'code'; target; tests }`) is
+  `--codegen` running a target's tests from their generated code, before
+  any test starts.
 - `test-finished` carries the full result record, including every attempt's
   artifacts.
 - `explore` appears only in an `e2e explore` run: `started`, `planning`,

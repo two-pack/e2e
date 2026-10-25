@@ -97,7 +97,7 @@ describe('defineEngine', () => {
       /codegen.render must be a function/,
     );
     expect(() => defineEngine(observingEngine({ codegen: { extension: '.ts', render, language: 'ts' } as never }))).toThrow(
-      /codegen has unknown key "language"; expected one of extension, render, locate/,
+      /codegen has unknown key "language"; expected one of extension, render, locate, run/,
     );
     const located = defineEngine(observingEngine({ codegen: { extension: '.ts', render, locate: () => ['n1'] } }));
     expect(located.codegen?.locate?.({ role: 'button' }, [])).toEqual(['n1']);

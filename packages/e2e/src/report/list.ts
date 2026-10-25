@@ -553,7 +553,7 @@ export class ListReporter implements Reporter {
     this.inFlight = undefined;
     const process = event.step.kind === 'service' || event.step.kind === 'app';
     if (process) this.startupMs += event.durationMs;
-    if (!process && !narrated) {
+    if (!process && event.step.kind !== 'code' && !narrated) {
       this.window.redraw();
       return;
     }
@@ -1127,9 +1127,12 @@ export class ListReporter implements Reporter {
     if (event.codegen !== undefined) {
       const files = event.codegen.files;
       const calls = event.codegen.modelCalls;
+      const fromCode = event.codegen.fromCode;
+      const tests = (count: number): string => `${String(count)} ${count === 1 ? 'test' : 'tests'}`;
       this.print(
         padTitle(pc, 'Code') +
           `${this.displayPath(event.codegen.dir)} ${pc.dim(`(${String(files)} ${files === 1 ? 'file' : 'files'})`)}` +
+          (fromCode === undefined ? '' : ` · ${tests(fromCode.passed)} passed from code${fromCode.toAgent === 0 ? '' : `, ${tests(fromCode.toAgent)} went to the agent`}`) +
           (calls === undefined ? '' : ` · ${String(calls)} model call${calls === 1 ? '' : 's'}`),
       );
     }
@@ -1156,5 +1159,11 @@ function setupWording(step: SetupStep): { verb: string; subject: string; done: s
     case 'service':
     case 'app':
       return { verb: 'starting', subject: bounded(step.label), done: 'ready' };
+    case 'code':
+      return {
+        verb: 'running',
+        subject: `generated code for ${String(step.tests)} ${step.tests === 1 ? 'test' : 'tests'} of target "${bounded(step.target)}"`,
+        done: 'ran',
+      };
   }
 }

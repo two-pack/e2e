@@ -129,7 +129,13 @@ export function web(options: WebOptions = {}): EngineHandle {
       press: (key, operation) => surface.pressKey(key, operation),
     },
     validateApp,
-    codegen: playwrightCodegen(options.testIdAttribute),
+    codegen: playwrightCodegen(options.testIdAttribute, {
+      ...(typeof options.browser === 'string' ? { browserName: options.browser } : {}),
+      ...(options.viewport === undefined ? {} : { viewport: options.viewport }),
+      ...(options.userAgent === undefined ? {} : { userAgent: options.userAgent }),
+      ...(options.locale === undefined ? {} : { locale: options.locale }),
+      ...(options.timezoneId === undefined ? {} : { timezoneId: options.timezoneId }),
+    }),
     ...(isSecret(options.basicAuth?.password) ? { secrets: [options.basicAuth.password] } : {}),
     session: {
       open: (url, operation) => surface.open(url, operation),

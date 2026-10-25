@@ -246,4 +246,75 @@ export interface EngineCodegen {
    * check only when it finds nothing.
    */
   locate?(target: CodegenTargetDescriptor, screen: readonly CodegenScreenNode[]): readonly string[] | undefined;
+  /**
+   * Runs tests of files `render` wrote, without a model. Runs in the runner
+   * process once the app is up, before any worker starts: a `--codegen` run
+   * hands it every selected test whose kept code proves it, and runs each one
+   * that did not pass here with the agent instead, writing its code again.
+   */
+  run?(request: CodegenRunRequest): Promise<CodegenRunResult>;
 }
+
+/** One generated file to run, and the tests of it the run asks for. */
+export interface CodegenRunFile {
+  /** The generated file, absolute. */
+  readonly path: string;
+  /** The tests to run, each by the e2e test id the result goes back under and its title path. */
+  readonly tests: readonly { readonly id: string; readonly titlePath: readonly string[] }[];
+}
+
+/** What `run` is handed. */
+export interface CodegenRunRequest {
+  readonly projectRoot: string;
+  /**
+   * A directory the engine owns for this call, empty and inside the run's
+   * output: the place for its own config, report, and output files.
+   */
+  readonly workDir: string;
+  readonly files: readonly CodegenRunFile[];
+  /** The target app's base URL, when it has one: the code's base URL. */
+  readonly appUrl?: string;
+  /** The longest one test may run, in milliseconds: the run's test timeout. */
+  readonly timeoutMs: number;
+  /** The longest one action may wait for its element, in milliseconds: the run's `actionTimeout`. */
+  readonly actionTimeoutMs: number;
+  /** The longest an assertion without a timeout of its own retries, in milliseconds: the run's `assertionTimeout`. */
+  readonly assertionTimeoutMs: number;
+  /** How many tests may run at once: the run's worker count. */
+  readonly workers: number;
+  /**
+   * The environment to run the code in: the runner's, with the variables a
+   * secret or credential is overridden by (`E2E_SECRET_<NAME>`,
+   * `E2E_USER_<NAME>_USERNAME`, `E2E_USER_<NAME>_PASSWORD`) set to the
+   * configured values the code reads. Nothing the code prints may reach a
+   * report or a log unredacted.
+   */
+  readonly env: Readonly<Record<string, string | undefined>>;
+  /** Aborts on an interrupt: stop the tests and return what finished. */
+  readonly signal: AbortSignal;
+}
+
+/** How one test of a `run` ended. */
+export interface CodegenRunOutcome {
+  /** The `id` the request named the test by. */
+  readonly id: string;
+  readonly status: 'passed' | 'failed';
+  readonly startedAt: string;
+  readonly durationMs: number;
+  /** Why it failed, as the code's test runner said; the runner redacts it. */
+  readonly error?: string;
+}
+
+/**
+ * What `run` returns: `ran` with each test that finished, a test it leaves
+ * out being one that did not run; `unavailable` when the code could not run
+ * at all (its test runner is not installed, wrote no result), with why.
+ */
+export type CodegenRunResult =
+  | {
+      readonly kind: 'ran';
+      readonly tests: readonly CodegenRunOutcome[];
+      /** Why the tests it leaves out did not run, when the code's test runner said (a file that failed to load). */
+      readonly notRun?: string;
+    }
+  | { readonly kind: 'unavailable'; readonly reason: string };

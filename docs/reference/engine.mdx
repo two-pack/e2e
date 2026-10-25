@@ -1970,6 +1970,16 @@ earlier screen showed with nothing of its own to be found by, known by its
 role alone, is offered only when `locate` answers for it. A target whose engine declares no `codegen` gets
 a notice. A `render` that throws is a `REPORT_WRITE_FAILED` run error.
 
+An engine with `run` runs the code `render` wrote. Once the app is up and
+before any worker starts, a `--codegen` run hands it every selected test
+whose kept code proves it: the e2e file and the code unchanged, no failure
+in it, an action or a check for every agent call. A test it reports
+`passed` is done. Every other test runs on the agent as usual, and its code
+is written again. `unavailable` means the code could not run at all: one
+notice, and the agent runs every test. A `run` that throws counts as
+`unavailable`. The runner redacts every reason before it reaches a notice
+or `run.codegen.ran`.
+
 ```ts
 /** Writes recorded agent steps out as the engine's own test code (`e2e run --codegen`). */
 export interface EngineCodegen {
@@ -1979,7 +1989,38 @@ export interface EngineCodegen {
   render(file: CodegenFile): CodegenRendered;
   /** The ids of the nodes of `screen` the locator `render` writes for `target` finds, in document order; undefined when it cannot tell. Runs in the worker. */
   locate?(target: CodegenTargetDescriptor, screen: readonly CodegenScreenNode[]): readonly string[] | undefined;
+  /** Runs tests of files `render` wrote, without a model. Runs in the runner process before any worker starts. */
+  run?(request: CodegenRunRequest): Promise<CodegenRunResult>;
 }
+
+/** What `run` is handed. */
+export interface CodegenRunRequest {
+  readonly projectRoot: string;
+  /** An empty directory inside the run's output, the engine's for this call. */
+  readonly workDir: string;
+  /** Each generated file, absolute, with the tests to run by e2e test id and title path. */
+  readonly files: readonly { readonly path: string; readonly tests: readonly { readonly id: string; readonly titlePath: readonly string[] }[] }[];
+  readonly appUrl?: string;
+  /** The run's `timeout`, `actionTimeout`, and `assertionTimeout`, and its worker count. */
+  readonly timeoutMs: number;
+  readonly actionTimeoutMs: number;
+  readonly assertionTimeoutMs: number;
+  readonly workers: number;
+  /** The runner's environment, with each configured secret and credential under the variable that overrides it, unless already set. */
+  readonly env: Readonly<Record<string, string | undefined>>;
+  /** Aborts on an interrupt. */
+  readonly signal: AbortSignal;
+}
+
+/** `ran` with each test that finished, a test left out not run; `unavailable` when nothing could run. */
+export type CodegenRunResult =
+  | {
+      readonly kind: 'ran';
+      readonly tests: readonly { readonly id: string; readonly status: 'passed' | 'failed'; readonly startedAt: string; readonly durationMs: number; readonly error?: string }[];
+      /** Why the tests left out did not run, when known. */
+      readonly notRun?: string;
+    }
+  | { readonly kind: 'unavailable'; readonly reason: string };
 
 /** One node of a screen as `locate` reads it; every text is the redacted one the agent read. */
 export interface CodegenScreenNode {

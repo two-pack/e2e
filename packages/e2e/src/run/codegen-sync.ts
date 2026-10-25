@@ -25,7 +25,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { ResolvedConfig } from '../config/resolve.ts';
 import type { CodegenFailure, CodegenFile, CodegenRendered, CodegenStep, CodegenTest } from '../engine/codegen.ts';
-import type { ReportCodegen, ReportCodegenFailure, ReportCodegenGap } from '../report/build.ts';
+import type { ReportCodegen, ReportCodegenFailure, ReportCodegenGap, ReportCodegenRun } from '../report/build.ts';
 import { writeJsonReport, writeTextReport } from '../report/write.ts';
 import type { CodegenAttempt, CodegenScreenshot } from './codegen.ts';
 import { isPlainObject } from '../internal/options.ts';
@@ -640,13 +640,66 @@ export async function clearCodegen(config: ResolvedConfig): Promise<{ readonly r
   return { records: records.length, files };
 }
 
+/** One e2e file's generated code on one target, and the tests of it the code proves whole. */
+export interface RunnableCode {
+  /** The e2e file, project-root relative with `/` separators. */
+  readonly file: string;
+  readonly target: string;
+  /** The generated file, absolute. */
+  readonly code: string;
+  /** The tests the code runs without a model, by test id, each with its title path. */
+  readonly tests: ReadonlyMap<string, readonly string[]>;
+}
+
+/**
+ * The generated code a `--codegen` run may run in place of the agent: for
+ * each record, the tests whose code does everything the test did, with no
+ * model. A record counts only while its e2e file and its generated file are
+ * both as it last wrote them; a test, only when it was recorded from that same
+ * source, its code stops at no failure, and every agent call in it has the
+ * actions or the checks to write it from. A judgment its checks prove only
+ * in part still counts: its code runs the checks that were kept.
+ */
+export async function runnableCode(config: ResolvedConfig): Promise<RunnableCode[]> {
+  const runnable: RunnableCode[] = [];
+  for (const record of await readRecords(outputLayout(config.output).codegen)) {
+    const source = await readFile(path.join(config.projectRoot, record.file), 'utf8').catch(() => undefined);
+    if (source === undefined || digest(source) !== record.sourceDigest) continue;
+    const code = path.join(config.projectRoot, record.code);
+    if (!isInside(code, config.codegen.outDir)) continue;
+    const written = await readFile(code, 'utf8').catch(() => undefined);
+    if (written === undefined || digest(written) !== record.codeDigest) continue;
+    const tests = new Map<string, readonly string[]>();
+    for (const stored of record.tests) {
+      if (stored.sourceDigest === record.sourceDigest && provesWhole(stored.test)) tests.set(stored.id, stored.test.titlePath);
+    }
+    if (tests.size > 0) runnable.push({ file: record.file, target: record.target, code, tests });
+  }
+  return runnable;
+}
+
+/** Whether a test's code runs to its end: no failure it stops at, and every agent call written from what it did or checked. */
+function provesWhole(test: CodegenTest): boolean {
+  if (test.failure !== undefined) return false;
+  return test.steps.every((step) => {
+    if (step.failure !== undefined) return false;
+    if (!step.api.startsWith('agent.')) return true;
+    if (step.api === 'agent.act') return step.recording !== undefined;
+    return step.judgment !== undefined && step.judgment.checks.length > 0;
+  });
+}
+
+/** How one test the run gave to its generated code ended there, as the report keeps it. */
+export type CodeRun = ReportCodegenRun;
+
 /** The report's `run.codegen` block for what a write produced, its paths project-root relative. */
-export function reportCodegen(output: CodegenOutput, projectRoot: string): ReportCodegen {
+export function reportCodegen(output: CodegenOutput, projectRoot: string, ran: readonly CodeRun[] = []): ReportCodegen {
   return {
     dir: relativeTo(projectRoot, output.dir) || '.',
     files: output.files.map((file) => relativeTo(projectRoot, file)),
     gaps: output.gaps,
     failures: output.failures,
+    ...(ran.length === 0 ? {} : { ran }),
   };
 }
 

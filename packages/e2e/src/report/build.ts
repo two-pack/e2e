@@ -135,6 +135,22 @@ export interface ReportCodegen {
   readonly failures: readonly ReportCodegenFailure[];
   /** The model calls the run made for judgments' checks, summed over its steps' `codegenModel`; absent when it made none. */
   readonly usage?: ReportCodegenUsage;
+  /** The tests the run gave to their generated code before the agent, and how each ended there; absent when it gave none. */
+  readonly ran?: readonly ReportCodegenRun[];
+}
+
+/** One test a `--codegen` run gave to its generated code: `passed` is the test's result, `failed` and `not-run` sent it to the agent. */
+export interface ReportCodegenRun {
+  /** The e2e test file, project-root relative. */
+  readonly source: string;
+  readonly test: string;
+  readonly target: string;
+  /** The generated file, project-root relative. */
+  readonly file: string;
+  readonly status: 'passed' | 'failed' | 'not-run';
+  readonly durationMs?: number;
+  /** Why the code failed or did not run, redacted. */
+  readonly reason?: string;
 }
 
 /** What `--codegen`'s questions for judgments' checks cost a run, apart from `run.usage`. */

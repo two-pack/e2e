@@ -34,7 +34,8 @@ import {
 } from '../internal/errors.ts';
 import { loadAiSdk } from '../agent/ai-sdk.ts';
 import { AiTraceCollector, AiTraceRecorder, registerAiTraceRecorder } from '../internal/ai-trace.ts';
-import { CodegenSync, codegenFailureWarnings, codegenGapWarnings, reportCodegen, type CodegenCollectionView, type CodegenOutput } from './codegen-sync.ts';
+import { CodegenSync, codegenFailureWarnings, codegenGapWarnings, reportCodegen, runnableCode, type CodeRun, type CodegenCollectionView, type CodegenOutput } from './codegen-sync.ts';
+import { runFromCode } from './codegen-run.ts';
 import { DebugTrace } from '../internal/debug.ts';
 import { resultId, timestamp, uuidv7 } from '../internal/ids.ts';
 import type { ExploreProgress } from '../explore/progress.ts';
@@ -44,7 +45,7 @@ import { writeTracePages, type TracePages } from '../report/traces.ts';
 import { STATELESS_REPORTERS } from '../report/builtin.ts';
 import { ListReporter } from '../report/list.ts';
 import { writeJsonReport } from '../report/write.ts';
-import { createRunEventEmitter, toEventResult, type RunEventSink, type RunExitCode, type RunStatus, type RunEventFact, type SetupStep } from './events.ts';
+import { createRunEventEmitter, toEventResult, type RunEventOf, type RunEventSink, type RunExitCode, type RunStatus, type RunEventFact, type SetupStep } from './events.ts';
 import { allocateAppPorts } from './app-ports.ts';
 import { inProcessSpawner } from './in-process.ts';
 import { someSkippedAfterFailure, tracedResultIds, type ResultRecord, type RunError, type SerialGroupRecord } from './records.ts';
@@ -391,6 +392,8 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
   const codegen = options.codegen === true ? new CodegenSync() : undefined;
   /** The test files this run collected, for `--codegen` to tell a test or file the project no longer has. */
   let codegenCollection: CodegenCollectionView | undefined;
+  /** The tests `--codegen` gave to their generated code before the agent, and how each ended there. */
+  let codeRuns: readonly CodeRun[] = [];
   /** The in-process recorder; child-process workers own their own. */
   let aiTraceRecorder: AiTraceRecorder | undefined;
   const interruptController = new AbortController();
@@ -547,7 +550,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       runErrors,
       targetProvenance,
       explore: options.tests?.explore?.snapshot(),
-      codegen: codegenOutput === undefined || loaded.config === undefined ? undefined : reportCodegen(codegenOutput, loaded.config.projectRoot),
+      codegen: codegenOutput === undefined || loaded.config === undefined ? undefined : reportCodegen(codegenOutput, loaded.config.projectRoot, codeRuns),
     });
     const carried = lastRun === undefined ? undefined : carryForward(lastRun, document, rerunCollection);
     return carried === undefined ? document : { ...document, run: { ...document.run, carried } };
@@ -695,7 +698,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       ...(reportPath === undefined ? {} : { reportPath }),
       ...(aiTracePath === undefined ? {} : { aiTracePath }),
       ...(traces.size === 0 ? {} : { traces: Object.fromEntries(traces) }),
-      ...(codegenOutput === undefined ? {} : { codegen: codegenFinished(codegenOutput, report.run.codegen?.usage?.calls) }),
+      ...(codegenOutput === undefined ? {} : { codegen: codegenFinished(codegenOutput, report.run.codegen?.usage?.calls, codeRuns) }),
     });
     // The list reporter has printed its summary and stopped its window; a
     // line another reporter left unfinished on `run-finished` prints too.
@@ -942,6 +945,36 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
     } catch (cause) {
       recordFailure(cause, 'launch');
       return;
+    }
+
+    // `--codegen` runs every test its kept code proves from that code first;
+    // what the code passed is done, and the agent runs the rest. Tests
+    // registered in memory and an exploration have no generated code.
+    if (codegen !== undefined && options.tests === undefined) {
+      try {
+        const runnable = await runnableCode(config);
+        if (runnable.length > 0) {
+          const fromCode = await runFromCode({
+            config,
+            plans,
+            runnable,
+            env,
+            signal: interrupted,
+            step: (target, tests, work) => setupStep({ kind: 'code', target, tests }, work),
+            notice,
+            onResult: (result) => {
+              results.push(result);
+              emit({ type: 'test-started', testId: result.test.id, agent: result.agent, repeat: result.repeat, title: result.test.titlePath.join(' > '), file: result.test.file, serialId: undefined, target: result.target.name });
+              emit({ type: 'test-finished', result: toEventResult(result) });
+            },
+          });
+          plans = fromCode.plans;
+          codeRuns = fromCode.ran;
+        }
+      } catch (cause) {
+        // The code is a shortcut: when it cannot be read or run, the agent runs every test as before.
+        notice('run', `--codegen ran no generated code, so the agent runs every test: ${errorMessage(cause)}`);
+      }
     }
 
     const artifactsRoot = layout.results;
@@ -1276,9 +1309,23 @@ async function loadRunConfig(
   });
 }
 
-/** The `codegen` of `run-finished`: where the code went, how many files, and the calls made for judgments' checks when there were any. */
-function codegenFinished(output: CodegenOutput, modelCalls: number | undefined): { dir: string; files: number; modelCalls?: number } {
-  return { dir: output.dir, files: output.files.length, ...(modelCalls === undefined ? {} : { modelCalls }) };
+/**
+ * The `codegen` of `run-finished`: where the code went, how many files, the
+ * calls made for judgments' checks when there were any, and how the tests
+ * given to their code ended there when there were any.
+ */
+function codegenFinished(
+  output: CodegenOutput,
+  modelCalls: number | undefined,
+  ran: readonly CodeRun[],
+): NonNullable<RunEventOf<'run-finished'>['codegen']> {
+  const passed = ran.filter((entry) => entry.status === 'passed').length;
+  return {
+    dir: output.dir,
+    files: output.files.length,
+    ...(modelCalls === undefined ? {} : { modelCalls }),
+    ...(ran.length === 0 ? {} : { fromCode: { passed, toAgent: ran.length - passed } }),
+  };
 }
 
 /**

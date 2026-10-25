@@ -63,6 +63,23 @@ describe.each(schemas)('%s schema', (name) => {
       }
     });
 
+    it('bounds a test --codegen gave to its generated code: its status and reason', () => {
+      const report = readJson('fixtures', 'report-v1.valid.json') as { run: { codegen: { ran: Record<string, unknown>[] } } };
+      const entry = report.run.codegen.ran[1]!;
+      const cases: [() => void, () => void][] = [
+        [() => (entry['status'] = 'skipped'), () => (entry['status'] = 'not-run')],
+        [() => (entry['reason'] = 'x'.repeat(2001)), () => (entry['reason'] = 'x'.repeat(2000))],
+        [() => delete entry['file'], () => (entry['file'] = 'e2e-gen/tests/example.gen.spec.ts')],
+        [() => (entry['durationMs'] = -1), () => (entry['durationMs'] = 0)],
+      ];
+      for (const [breakIt, fixIt] of cases) {
+        breakIt();
+        expect(validate(report)).toBe(false);
+        fixIt();
+        expect(validate(report)).toBe(true);
+      }
+    });
+
     it("bounds a step's screen and an attempt's environment", () => {
       const report = readJson('fixtures', 'report-v1.valid.json') as {
         run: { results: { attempts: (Record<string, unknown> & { steps: Record<string, unknown>[] })[] }[] };

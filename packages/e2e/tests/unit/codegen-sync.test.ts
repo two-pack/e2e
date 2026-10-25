@@ -1,14 +1,21 @@
 /**
  * `planCodegenSync`: which generated files a `--codegen` run keeps, deletes,
  * and writes again, and from which tests, the way the replay cache keeps its
- * entries but with one file per e2e file.
+ * entries but with one file per e2e file; and `runnableCode`: which kept tests
+ * a later run may run from their code in place of the agent.
  */
 
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import type { ResolvedConfig } from '../../src/config/resolve.ts';
+import type { CodegenStep } from '../../src/engine/codegen.ts';
 import {
   generatedPath,
   planCodegenSync,
+  runnableCode,
   testForSource,
   type CodegenCollectionView,
   type CodegenOutcome,
@@ -156,5 +163,75 @@ describe('generatedPath', () => {
     expect(generatedPath(outDir, 'tests/ログイン.e2e.ts', '.gen.spec.ts', undefined)).toBe(path.join(outDir, 'tests', 'ログイン.gen.spec.ts'));
     expect(generatedPath(outDir, 'tests/todo.e2e.ts', '.gen.spec.ts', 'web')).toBe(path.join(outDir, 'tests', 'todo.web.gen.spec.ts'));
     expect(generatedPath(outDir, '../outside.e2e.ts', '.gen.spec.ts', undefined)).toBeUndefined();
+  });
+});
+
+describe('runnableCode', () => {
+  const SOURCE = "test('a', async () => {});\n";
+  const CODE = '// generated\n';
+  const sha = (text: string): string => createHash('sha256').update(text).digest('hex');
+  const roots: string[] = [];
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  /** A project whose one e2e file has a record and generated code, as a `--codegen` run leaves them. */
+  function project(tests: readonly StoredCodegenTest[], change: { source?: string; code?: string } = {}): ResolvedConfig {
+    const root = mkdtempSync(path.join(tmpdir(), 'e2e-runnable-code-'));
+    roots.push(root);
+    mkdirSync(path.join(root, 'tests'), { recursive: true });
+    mkdirSync(path.join(root, 'e2e-gen', 'tests'), { recursive: true });
+    mkdirSync(path.join(root, '.e2e', 'codegen', 'web', 'tests'), { recursive: true });
+    writeFileSync(path.join(root, FILE), change.source ?? SOURCE);
+    writeFileSync(path.join(root, 'e2e-gen', 'tests', 'todo.gen.spec.ts'), change.code ?? CODE);
+    const kept = { ...record(tests, sha(SOURCE)), codeDigest: sha(CODE) };
+    writeFileSync(path.join(root, '.e2e', 'codegen', 'web', 'tests', 'todo.e2e.ts.json'), JSON.stringify(kept));
+    return { projectRoot: root, output: path.join(root, '.e2e'), codegen: { outDir: path.join(root, 'e2e-gen') } } as unknown as ResolvedConfig;
+  }
+
+  function withSteps(id: string, steps: readonly CodegenStep[]): StoredCodegenTest {
+    return { ...stored(id, sha(SOURCE)), test: { title: id, titlePath: ['group', id], steps } };
+  }
+
+  const act: CodegenStep = { api: 'agent.act', label: 'add a todo', recording: { actions: [], incomplete: false } };
+  const checked: CodegenStep = {
+    api: 'agent.assert',
+    label: 'the todo is listed',
+    judgment: { checks: [{ kind: 'url', location: '/todos' }] },
+  };
+
+  it('offers the tests whose code does everything they did, a judgment proved only in part among them', () => {
+    const partial: CodegenStep = { ...checked, judgment: { checks: checked.judgment!.checks, gap: { uncovered: ['the rest'], dropped: [] } } };
+    const config = project([withSteps('whole', [act, checked, { api: 'expect.toBeVisible', label: 'x' }]), withSteps('partial', [act, partial])]);
+    return expect(runnableCode(config)).resolves.toEqual([
+      {
+        file: FILE,
+        target: 'web',
+        code: path.join(config.projectRoot, 'e2e-gen', 'tests', 'todo.gen.spec.ts'),
+        tests: new Map([
+          ['whole', ['group', 'whole']],
+          ['partial', ['group', 'partial']],
+        ]),
+      },
+    ]);
+  });
+
+  it('leaves out a test whose code throws: a failure, an act with no actions, a judgment with no check', async () => {
+    const failure = { code: 'ASSERTION_FAILED', message: 'no' };
+    const config = project([
+      withSteps('failed-step', [{ ...act, failure }]),
+      { ...withSteps('failed-test', [act]), test: { title: 'failed-test', titlePath: ['failed-test'], steps: [act], failure } },
+      withSteps('unrecorded-act', [{ api: 'agent.act', label: 'add a todo' }]),
+      withSteps('unconverted', [{ ...checked, judgment: { checks: [], gap: { uncovered: ['all'], dropped: [] } } }]),
+      withSteps('unjudged', [{ api: 'agent.waitFor', label: 'the list loads' }]),
+    ]);
+    expect(await runnableCode(config)).toEqual([]);
+  });
+
+  it('offers nothing once the e2e file or the generated file changed, or for a test recorded from an older source', async () => {
+    expect(await runnableCode(project([withSteps('a', [act])], { source: `${SOURCE}// edited\n` }))).toEqual([]);
+    expect(await runnableCode(project([withSteps('a', [act])], { code: `${CODE}// edited by hand\n` }))).toEqual([]);
+    expect(await runnableCode(project([{ ...withSteps('a', [act]), sourceDigest: 'older' }]))).toEqual([]);
   });
 });

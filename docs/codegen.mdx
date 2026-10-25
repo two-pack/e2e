@@ -53,6 +53,7 @@ follows:
 
 | In this run | The test's code |
 | --- | --- |
+| The test passed from its code (see [below](#a-test-with-code-runs-from-it)) | Left as it was. |
 | The test passed | Written again from what this run recorded. |
 | The test was not run (`--grep`, a file named on the command line, `--last-failed`, an interrupt) | Left as it was. |
 | The test failed only because no model answered (`MODEL_UNAVAILABLE`, `MODEL_PROVIDER_FAILED`) | Left as it was. |
@@ -76,6 +77,66 @@ A generated file edited by hand since the run last wrote it is written over,
 and the run says so in a warning, as it does for a file at that path it has
 no record of writing. Keep your changes in a file of your own beside it. `e2e codegen clear` deletes every generated file and the records
 behind them, and leaves files no record names alone.
+
+## A test with code runs from it
+
+A `--codegen` run runs a test from its generated code first, when that code
+does all the test did. No model is called and no agent step runs. The agent
+runs the test only when the code fails or can't run, and the run writes the
+test's code again from that run. So the first run writes the code, and later
+runs use it until the app changes under it.
+
+The web engine needs `@playwright/test` in the project to run the code:
+
+<CodeGroup>
+```bash npm
+npm install --save-dev @playwright/test
+```
+
+```bash pnpm
+pnpm add --save-dev @playwright/test
+```
+
+```bash bun
+bun add --dev @playwright/test
+```
+</CodeGroup>
+
+The code runs before any worker starts, on a browser `@playwright/test`
+launches on this machine. It uses a config of its own, so your
+`playwright.config.ts` doesn't apply: no web server, no projects, no
+retries. The page gets the engine's `browser`, `viewport`, `userAgent`,
+`locale`, and `timezoneId`. A browser provider, `connect`, `headers`, and
+`basicAuth` don't apply. Each
+action waits up to `actionTimeout` and each `expect` up to
+`assertionTimeout`, so a step whose element is gone fails as fast as it
+would in e2e.
+
+A test runs from its code only when all of these hold:
+
+- The e2e file and the generated file are as the run last wrote them. A
+  file edited by hand doesn't count.
+- The code doesn't stop at a failure, and every agent call in it has
+  actions or checks. A judgment checked only in part counts.
+- The test is not a setup test, uses no saved session, is not in a
+  `test.describe.serial` group, and runs one time, as one agent.
+
+The code reads secrets and credentials from the variables that override
+them (`E2E_SECRET_<NAME>`, `E2E_USER_<NAME>_USERNAME`,
+`E2E_USER_<NAME>_PASSWORD`). The run sets each one to the configured value,
+unless your environment already sets it.
+
+The `Code` row counts the tests that passed from code and those that went
+to the agent. `report.json` lists each one under `run.codegen.ran`, with
+`passed`, `failed`, or `not-run`, and the redacted reason. A project without
+`@playwright/test` gets one notice, and the agent runs every test.
+`e2e codegen clear` makes the next run use the agent for every test.
+
+```text
+ ✓ generated code for 2 tests of target "web" ran 1.43s
+ℹ --codegen: the generated code did not pass 1 test of target "web", so the agent runs it and writes its code again
+       Code  e2e-gen (1 file) · 1 test passed from code, 1 test went to the agent
+```
 
 ## What you get
 
@@ -347,9 +408,11 @@ steps alone, one Playwright test per passing test.
 
 The agent adapts to the screen on every run; the file does not. Each test in
 it is what the agent did and checked in the run that last refreshed that
-test, against the data that run saw. Read the diff before you commit it, and
-run `--codegen` again after the app changes. A step replayed from the [replay cache](/cache) writes the
-same actions as the run that recorded it.
+test, against the data that run saw. Read the diff before you commit it. A
+test that passes from its code keeps that code, even when the app changed in
+a way the code still passes. To write every test again from the agent, run
+`e2e codegen clear` first. A step replayed from the [replay cache](/cache)
+writes the same actions as the run that recorded it.
 
 Only the web engine writes code. Any other target gets a notice
 (`--codegen wrote no code for target "ios": engine "mobile" declares no codegen`).
