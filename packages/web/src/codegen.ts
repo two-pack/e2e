@@ -11,20 +11,25 @@
  */
 
 import type { CodegenFile, CodegenRendered, CodegenStep, CodegenTest, EngineCodegen } from 'e2e/engine';
+import { runGeneratedCode, type CodegenRunUse } from './codegen-run.ts';
 import { convertSource } from './codegen-source.ts';
 import { failureComments, gapComments, gapMarker, literal, locateOnScreen, oneLine, PLAYWRIGHT_TEST_ID_ATTRIBUTE, StatementWriter, takeGapLines } from './codegen-statements.ts';
 
 /** e2e's default judgment timeout, the deadline a `waitFor` check retries until in the fallback. */
 const DEFAULT_JUDGMENT_TIMEOUT = '30_000';
 
-/** The `codegen` member of the web engine, writing Playwright Test files for the run's test id attribute. */
-export function playwrightCodegen(testIdAttribute: string | undefined): EngineCodegen {
+/**
+ * The `codegen` member of the web engine: Playwright Test files for the run's
+ * test id attribute, run with the page options in `use`.
+ */
+export function playwrightCodegen(testIdAttribute: string | undefined, use: CodegenRunUse = {}): EngineCodegen {
   const attribute = testIdAttribute ?? PLAYWRIGHT_TEST_ID_ATTRIBUTE;
   return {
     // `.gen` marks the file as written by e2e; `.spec` is the name Playwright Test picks up by default.
     extension: '.gen.spec.ts',
     render: (file) => convertSource(file, attribute) ?? renderSteps(file, attribute),
     locate: locateOnScreen,
+    run: (request) => runGeneratedCode(request, use),
   };
 }
 

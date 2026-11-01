@@ -125,24 +125,26 @@ function hookManifest<K extends keyof typeof NESTED_HOOKS>(
 /** A file extension with its leading dot, like `.spec.ts`: no separators, nothing a path could climb out with. */
 const CODEGEN_EXTENSION_PATTERN = /^(?:\.[A-Za-z0-9_-]+)+$/u;
 
-/** Validates the `codegen` declaration: an extension, a `render` function, and an optional `locate`, bound to the declaration. */
+/** Validates the `codegen` declaration: an extension, a `render` function, and an optional `locate` and `run`, bound to the declaration. */
 function codegenManifest(name: string, value: unknown): Record<string, unknown> {
   if (!isRecord(value)) throw invalid(name, 'codegen must be an object');
   for (const member of Object.keys(value)) {
-    if (member !== 'extension' && member !== 'render' && member !== 'locate') {
-      throw invalid(name, `codegen has unknown key "${member}"; expected one of extension, render, locate`);
+    if (member !== 'extension' && member !== 'render' && member !== 'locate' && member !== 'run') {
+      throw invalid(name, `codegen has unknown key "${member}"; expected one of extension, render, locate, run`);
     }
   }
-  const { extension, render, locate } = value;
+  const { extension, render, locate, run } = value;
   if (typeof extension !== 'string' || !CODEGEN_EXTENSION_PATTERN.test(extension)) {
     throw invalid(name, 'codegen.extension must be a file extension with its leading dot, like ".spec.ts"');
   }
   if (typeof render !== 'function') throw invalid(name, 'codegen.render must be a function');
   if (locate !== undefined && typeof locate !== 'function') throw invalid(name, 'codegen.locate must be a function');
+  if (run !== undefined && typeof run !== 'function') throw invalid(name, 'codegen.run must be a function');
   return Object.freeze({
     extension,
     render: render.bind(value),
     ...(locate === undefined ? {} : { locate: (locate as (...args: unknown[]) => unknown).bind(value) }),
+    ...(run === undefined ? {} : { run: (run as (...args: unknown[]) => unknown).bind(value) }),
   });
 }
 

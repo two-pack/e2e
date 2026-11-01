@@ -515,7 +515,7 @@ Test files, directories, or globs relative to the project root:
 | `--cache-dir <dir>` | The replay cache directory for this run, over [`E2E_CACHE_DIR`](/reference/environment#replay-cache) and [`cache.dir`](/reference/config#cache). Default: `E2E_CACHE_DIR`, else `cache.dir`, else `.e2e/cache`. Resolved from the project root; `~` or a leading `~/` is the home directory. The cache mode stays as configured. With a custom `cache.store` it is `INVALID_CONFIG`. |
 | `--debug` | Phase timings and an agent step table on stderr after the run; see [Debug output](#debug-output). |
 | `--ai-trace` | Records every model call to `<output>/ai-trace.json`; see [Output](#output). |
-| `--codegen` | Keeps each e2e file's generated Playwright code under [`codegen.outDir`](/reference/config#codegen) in step with the run; see [Output](#output). |
+| `--codegen` | Runs each test from its generated Playwright code when that code proves it, else on the agent, and keeps each e2e file's code under [`codegen.outDir`](/reference/config#codegen) in step with the run; see [Output](#output). |
 | `--trace [mode]` | Which tests keep a trace page (`<output>/results/<test>/trace.md`): `off`, `on`, `retain-on-failure`, `on-first-retry`, or `on-all-retries`. Default: the config. `--trace off` writes none for a test without its own `trace`. See [trace](/reference/config#trace). |
 | `--video [mode]` | Which attempts record a video (WebM on a browser engine, MP4 on a device engine), with the modes of `--trace`. Default: the config. Only targets whose engine can record get one; the run names the others in one notice. See [video](/reference/config#video). |
 
@@ -653,15 +653,19 @@ Open it with [unbox-ai](https://github.com/tester-army/unbox-ai):
 
 With `--codegen`, the run keeps one generated file per e2e file under
 [`codegen.outDir`](/reference/config#codegen) (`e2e-gen/` by default), and
-what each test last recorded under `<output>/codegen/`. Each passing judgment
+what each test last recorded under `<output>/codegen/`. A test whose kept
+code does all it did runs from that code first, with no model; the agent
+runs it only when the code fails or can't run. Each passing judgment
 costs one more judge call, unless the checks it made last time still hold.
 The `list` reporter prints a `Code` row with the directory, the number of
-files written, and the model calls those judge calls took, and a warning for
+files written, the tests that passed from code and those that went to the
+agent, and the model calls those judge calls took, and a warning for
 each judgment the code proves only in part and each test whose code stops at
 a failure; the `AI` row leaves those calls out. `report.json` gains
 `run.codegen`: the directory, the files written, those judgments and
 failures under `gaps` and `failures`, a test this run did not refresh marked
-`carried`, and the judge calls' count, tokens, and cost under `usage`. A target whose engine writes no code gets a notice. See
+`carried`, the tests given to their code under `ran`, and the judge calls'
+count, tokens, and cost under `usage`. A target whose engine writes no code gets a notice. See
 [Export to Playwright](/codegen).
 
 <a id="watch-mode" />

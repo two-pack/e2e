@@ -661,6 +661,25 @@
       "dir": "e2e-gen",
       "files": ["e2e-gen/tests/example.gen.spec.ts"],
       "usage": { "calls": 1, "inputTokens": 140, "outputTokens": 20 },
+      "ran": [
+        {
+          "source": "tests/example.e2e.ts",
+          "test": "adds a todo",
+          "target": "web",
+          "file": "e2e-gen/tests/example.gen.spec.ts",
+          "status": "passed",
+          "durationMs": 840
+        },
+        {
+          "source": "tests/example.e2e.ts",
+          "test": "signs out",
+          "target": "web",
+          "file": "e2e-gen/tests/example.gen.spec.ts",
+          "status": "failed",
+          "durationMs": 5120,
+          "reason": "Error: expect(locator).toBeVisible() failed"
+        }
+      ],
       "gaps": [
         {
           "file": "e2e-gen/tests/example.gen.spec.ts",

@@ -54,7 +54,9 @@ export type SetupStep =
   | { readonly kind: 'collect' }
   | { readonly kind: 'prepare'; readonly target: string; readonly engine: string }
   | { readonly kind: 'service'; readonly label: string }
-  | { readonly kind: 'app'; readonly label: string };
+  | { readonly kind: 'app'; readonly label: string }
+  /** `--codegen` running a target's tests from their generated code before the agent runs the rest. */
+  | { readonly kind: 'code'; readonly target: string; readonly tests: number };
 
 /** One fact about the run; the emitter wraps it in the envelope. */
 export type RunEventFact =
@@ -236,9 +238,17 @@ export type RunEventFact =
       /**
        * Where `--codegen` wrote the engines' code, and how many files, once
        * they exist; `modelCalls`, the calls it made for judgments' checks,
-       * when it made any (`run.codegen.usage` in the report).
+       * when it made any (`run.codegen.usage` in the report); `fromCode`,
+       * when it gave tests to their generated code before the agent, how
+       * many the code passed and how many went to the agent after all
+       * (`run.codegen.ran`).
        */
-      readonly codegen?: { readonly dir: string; readonly files: number; readonly modelCalls?: number };
+      readonly codegen?: {
+        readonly dir: string;
+        readonly files: number;
+        readonly modelCalls?: number;
+        readonly fromCode?: { readonly passed: number; readonly toAgent: number };
+      };
     };
 
 /** Envelope stamped by the emitter: monotonic order and wall-clock time. */
