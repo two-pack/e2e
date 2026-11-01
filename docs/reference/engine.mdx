@@ -99,7 +99,7 @@ rules:
 | `keyboard`, `state`, `artifacts`, `session` | An unknown key or a non-function member. `keyboard` without `type` and `press`; `state` without both `capture` and `restore`; `artifacts` without `screenshot`; `startVideo` without `stopVideo`, or the reverse. |
 | `secrets` | Not an array of `secrets.get()` handles. |
 | `fixtures` | Not an object, a fixture that is not a factory function, or a fixture name that is not a lower-camel identifier or shadows `agent`, `app`, `screen`, `platform`, or `session`. |
-| `codegen` | Not an object of exactly `extension` (a file extension with its leading dot, such as `.spec.ts`), a `render` function, and an optional `locate` function. |
+| `codegen` | Not an object of exactly `extension` (a file extension with its leading dot, such as `.spec.ts`), a `render` function, and an optional `locate` function and an optional `run` function. |
 
 <Note>
 `artifacts.startTrace` and `artifacts.stopTrace` were removed from the
@@ -2177,7 +2177,7 @@ export type CodegenCheck =
 `CodegenAction` is the action union the [replay cache](/cache) records:
 `tap`, `doubleTap`, `longPress`, `secondaryTap`, `hover`, `scrollTo`, `type`,
 `typeSecret` (by secret name), `press`, `select`, `check`, `upload`, `drag`,
-`scroll`, `scrollUntil`, `navigate`, `back`, `tapAt`, `hoverAt`, `typeText`,
+`scroll`, `scrollUntil`, `navigate`, `back`, `tapAt`, `hoverAt`, `dragAt`, `typeText`,
 `pressKey`, `dismissKeyboard`, and `tool`, a gap for a project tool or a typed
 value the run read off the screen. A node is a `CodegenTargetDescriptor`:
 its role, name, text, test id, placeholder, the key of the row or other

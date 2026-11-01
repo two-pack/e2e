@@ -36,8 +36,9 @@ locator finds, so a title reading "Login" beside a button reading the same
 is dropped, not written as a `getByText` that matches both.
 
 A judgment with a gap also names a screenshot of the screen it passed on, in
-the run's artifacts, in its comment, the warning, and the report; none once a
-secret was filled, and the comment says why.
+the run's artifacts, in its comment, the warning, and the report; an
+`agent.assert` called with `screenshot: false` keeps none, and the comment
+says why.
 
 The code is kept in step across runs, one file per e2e file: each test's last
 passing recordings are kept under `<output>/codegen/`, a test the run did not

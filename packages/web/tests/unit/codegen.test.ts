@@ -302,11 +302,11 @@ describe('playwright codegen statements', () => {
     expect(playwrightCodegen(undefined).render(file).gaps).toEqual([]);
 
     const { screenshot: _screenshot, ...noScreenshot } = gap;
-    const withheld = { ...noScreenshot, screenshotWithheld: 'a secret was filled earlier in this attempt, so no screenshot leaves it' };
+    const withheld = { ...noScreenshot, screenshotWithheld: 'the call asked for no screenshot' };
     const unconverted: CodegenFile = { ...file, tests: [{ ...file.tests[0]!, steps: [{ ...file.tests[0]!.steps[0]!, judgment: { checks: [], gap: withheld } }] }] };
     const thrown = playwrightCodegen(undefined).render(unconverted);
     expect(thrown.code).toContain('// TODO: no deterministic check could be derived from the screen this judgment passed on.\n  //   The judge');
-    expect(thrown.code).toContain('  //   No screenshot: a secret was filled earlier in this attempt, so no screenshot leaves it');
+    expect(thrown.code).toContain('  //   No screenshot: the call asked for no screenshot');
     expect(thrown.gaps).toHaveLength(1);
   });
 

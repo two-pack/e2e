@@ -288,7 +288,7 @@ code.
 | Rule | Detail |
 | --- | --- |
 | Secrets | The child's environment gets every configured secret and credential under the variable that overrides it, unless already set. The generated file holds none. |
-| Output | The child's stdout and stderr are discarded. |
+| Output | The child's stdout is discarded. Up to 1000 characters of its stderr are kept to explain a run that could not start, and pass the redactor first. |
 | Failures | A failure's message passes the redactor before a notice or `run.codegen.ran`. |
 
 ### Cache trust

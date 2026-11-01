@@ -59,6 +59,8 @@ export interface ConnectEngineOptions {
   readonly fixtures?: Engine['fixtures'];
   /** Checks the target's app at config load, on the client. */
   readonly validateApp?: Engine['validateApp'];
+  /** Writes and runs test code from recorded steps, on the client; see `Engine.codegen`. */
+  readonly codegen?: Engine['codegen'];
   /** Answers locators on the client from observations, for a server without `engine/locate`. */
   readonly resolveLocators?: boolean;
   /** Session hooks the client answers instead of the server. */
@@ -82,7 +84,7 @@ serve them all from one engine.
 
 With `resolveLocators`, each `locate` observes and resolves the expression
 with [`resolveExpression`](/reference/engine#resolveexpression).
-`fixtures`, `validateApp`, `secrets`, and `session` hooks run on the client;
+`fixtures`, `validateApp`, `codegen`, `secrets`, and `session` hooks run on the client;
 a `session` hook replaces the server's method of the same name. See
 [Keep host work on the client](/engine-servers#keep-host-work-on-the-client).
 
