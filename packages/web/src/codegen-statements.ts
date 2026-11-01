@@ -54,6 +54,9 @@ export interface FileNeeds {
   testIdAttribute: boolean;
 }
 
+type DragAction = Extract<CodegenAction, { readonly name: 'dragAt' }>;
+type DragEnd = DragAction['from'];
+
 /** Writes statements for one file, noting the helpers they need. */
 export class StatementWriter {
   readonly needs: FileNeeds = { secrets: false, within: false, testIdAttribute: false };
@@ -121,6 +124,17 @@ export class StatementWriter {
           `await page.mouse.${verb}(${String(action.point.x)}, ${String(action.point.y)});`,
         ];
       }
+      case 'dragAt':
+        return [
+          '{',
+          ...this.pointEnd('from', action.from, action.viewport),
+          ...this.pointEnd('to', action.to, action.viewport),
+          '  await page.mouse.move(from.x, from.y);',
+          '  await page.mouse.down();',
+          '  await page.mouse.move(to.x, to.y, { steps: 10 });',
+          '  await page.mouse.up();',
+          '}',
+        ];
       case 'typeText':
         return [
           ...(action.replace ? ['await page.keyboard.press("ControlOrMeta+A");'] : []),
@@ -137,6 +151,21 @@ export class StatementWriter {
             : `// TODO: the agent typed a value this run read off the screen (${action.derived}); type it here by hand.`,
         ];
     }
+  }
+
+  /** The lines that put one end of a point drag into `name`: inside the node's box when the recording kept one, else the bare point. */
+  private pointEnd(name: string, end: DragEnd, viewport: DragAction['viewport']): string[] {
+    if (end.within !== undefined) {
+      return [
+        `  const ${name}Box = await ${this.locator(end.within.target)}.boundingBox();`,
+        `  if (${name}Box === null) throw new Error("the element the agent dragged ${name === 'from' ? 'from' : 'to'} is not visible");`,
+        `  const ${name} = { x: ${name}Box.x + ${name}Box.width * ${String(end.within.fx)}, y: ${name}Box.y + ${name}Box.height * ${String(end.within.fy)} };`,
+      ];
+    }
+    return [
+      `  // A bare point on the ${String(viewport.width)}x${String(viewport.height)} viewport the run used.`,
+      `  const ${name} = { x: ${String(end.point.x)}, y: ${String(end.point.y)} };`,
+    ];
   }
 
   /**

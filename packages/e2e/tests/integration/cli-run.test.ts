@@ -1,8 +1,9 @@
 /**
  * `e2e run` and `e2e list` through the built CLI on the fake engine, for what
  * only the process boundary decides: the exit code a crashed worker maps to,
- * shards that split one selection between two machines, and the defaults a
- * worker resolves for itself when `CI` is set.
+ * shards that split one selection between two machines, the defaults a
+ * worker resolves for itself when `CI` is set, and where a run error prints
+ * when no reporter prints to the terminal.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -57,7 +58,7 @@ function rerun(existing: FixtureProject, args: readonly string[], env: Record<st
     timeout: 60_000,
   });
   expect(result.error).toBeUndefined();
-  return { exitCode: result.status, output: result.stdout + result.stderr, stdout: result.stdout };
+  return { exitCode: result.status, output: result.stdout + result.stderr, stdout: result.stdout, stderr: result.stderr };
 }
 
 /** The report the last run wrote. */
@@ -66,6 +67,9 @@ function reportOf(ran: FixtureProject): Report1Document {
   assertValidReport(report);
   return report;
 }
+
+/** Keeps a process alive the way a database pool opened at import does. */
+const openTimer = 'setInterval(() => {}, 60_000);\n';
 
 const test = (title: string, body = '') => `import { test } from 'e2e';\ntest('${title}', async ({ app }) => {\n  await app.open();\n  ${body}\n});\n`;
 
@@ -112,6 +116,51 @@ describe('the run command through the CLI', () => {
     expect(executed.map((result) => result.titlePath.at(-1)).toSorted()).toEqual(['sign in', ...tests(second)].toSorted());
   });
 
+  it('fails a wrong locator and a wrong expectation at the timeout flags, not the config\'s, and a call\'s own timeout still wins', () => {
+    const { project, exitCode } = cli(
+      {
+        'e2e.config.ts': fakeConfig('{ locate: () => [] }', '\n  actionTimeout: 30_000,\n  assertionTimeout: 30_000,'),
+        'tests/timeouts.e2e.ts': `import { expect, test } from 'e2e';
+test('taps a button that is not there', async ({ app, screen }) => {
+  await app.open();
+  await screen.getByRole('button', { name: 'Submit now' }).tap();
+});
+test('expects a heading that is not there', async ({ app, screen }) => {
+  await app.open();
+  await expect(screen.getByRole('heading', { name: 'Welcome' })).toBeVisible();
+});
+test('taps with its own timeout', async ({ app, screen }) => {
+  await app.open();
+  await screen.getByRole('button', { name: 'Submit now' }).tap({ timeout: 1_500 });
+});
+`,
+      },
+      ['run', '--action-timeout', '400', '--assertion-timeout', '300'],
+    );
+    expect(exitCode).toBe(1);
+    const results = reportOf(project).run.results;
+    /** The failed step of the test titled `title`, with the error its attempt ended on. */
+    const failed = (title: string) => {
+      const attempt = results.find((result) => result.titlePath.at(-1) === title)?.attempts.at(-1);
+      const step = attempt?.steps.find((candidate) => candidate.status !== 'passed');
+      if (attempt === undefined || step === undefined) throw new Error(`no failed step in ${title}`);
+      return { error: attempt.error, step };
+    };
+    // The worker is a child process that resolves the config again: the flags reach it, or these wait 30 s.
+    const tap = failed('taps a button that is not there');
+    expect(tap.error?.code).toBe('LOCATOR_NOT_FOUND');
+    expect(tap.error?.details?.waitedMs).toBeGreaterThanOrEqual(400);
+    expect(tap.step.durationMs).toBeLessThan(5_000);
+    const assertion = failed('expects a heading that is not there');
+    expect(assertion.error?.code).toBe('ASSERTION_FAILED');
+    expect(assertion.step.durationMs).toBeGreaterThanOrEqual(300);
+    expect(assertion.step.durationMs).toBeLessThan(5_000);
+    const own = failed('taps with its own timeout');
+    expect(own.error?.code).toBe('LOCATOR_NOT_FOUND');
+    expect(own.error?.details?.waitedMs).toBeGreaterThanOrEqual(1_500);
+    expect(own.step.durationMs).toBeLessThan(5_000);
+  });
+
   it('under CI, refuses a focused test and retries a failure once', () => {
     const focused = cli(
       { 'e2e.config.ts': fakeConfig(), 'tests/only.e2e.ts': `import { test } from 'e2e';\ntest.only('focused', async () => {});\ntest('other', async () => {});\n` },
@@ -143,5 +192,70 @@ test('fails once', async ({ app }) => {
     const [result] = reportOf(flaky.project).run.results;
     expect(result?.status).toBe('flaky');
     expect(result?.attempts.map((attempt) => attempt.status)).toEqual(['failed', 'passed']);
+  });
+
+  it('ends run and list with their exit codes when the config and a test file leave a timer open', () => {
+    const project = fixture({
+      'e2e.config.ts': fakeConfig() + openTimer,
+      'tests/pass.e2e.ts': test('passes') + openTimer,
+      'tests/fail.e2e.ts': test('fails', "throw new Error('expected failure');") + openTimer,
+    });
+    expect(rerun(project, ['run', 'tests/pass.e2e.ts']).exitCode).toBe(0);
+    expect(reportOf(project).run.exitCode).toBe(0);
+    expect(rerun(project, ['run', 'tests/fail.e2e.ts']).exitCode).toBe(1);
+    const listed = rerun(project, ['list']);
+    expect(listed.exitCode).toBe(0);
+    expect(listed.output).toContain('passes');
+  });
+
+  it('exits 3 when a passed test failed its cleanup and the config leaves a timer open', () => {
+    const { exitCode } = cli(
+      {
+        'e2e.config.ts': fakeConfig("{ onEndAttempt() { throw new Error('cleanup failed'); } }") + openTimer,
+        'tests/pass.e2e.ts': test('passes'),
+      },
+      ['run'],
+    );
+    expect(exitCode).toBe(3);
+  });
+
+  it('exits 0 with the whole json report on stdout when a test file leaves a timer open', () => {
+    const titles = Array.from({ length: 400 }, (_, index) => `test number ${index}`);
+    const { exitCode, stdout } = cli(
+      {
+        'e2e.config.ts': fakeConfig(),
+        'tests/many.e2e.ts': `import { test } from 'e2e';\n${openTimer}for (const title of ${JSON.stringify(titles)}) test(title, async () => {});\n`,
+      },
+      ['run', '--reporter', 'json'],
+    );
+    expect(exitCode).toBe(0);
+    const report = JSON.parse(stdout) as Report1Document;
+    assertValidReport(report);
+    expect(report.run.results).toHaveLength(titles.length);
+  });
+
+  it('prints a run error on stderr once, whichever reporters run, and keeps the json document whole', () => {
+    const project = fixture({
+      'e2e.config.ts': fakeConfig(),
+      'tests/broken.e2e.ts': "import { test } from 'e2e';\ntest('broken', async () => { const text = 'unterminated; });\n",
+    });
+    const reason = /COLLECTION_ERROR[\s\S]*failed to collect tests\/broken\.e2e\.ts: .*Unterminated string/u;
+    const timesNamed = (text: string) => text.split('failed to collect tests/broken.e2e.ts').length - 1;
+    for (const reporter of ['junit', 'markdown']) {
+      const ran = rerun(project, ['run', '--reporter', reporter]);
+      expect(ran.exitCode, reporter).toBe(2);
+      expect(ran.stderr, reporter).toMatch(reason);
+      expect(timesNamed(ran.output), reporter).toBe(1);
+    }
+    const json = rerun(project, ['run', '--reporter', 'json']);
+    expect(json.exitCode).toBe(2);
+    const report = JSON.parse(json.stdout) as Report1Document;
+    assertValidReport(report);
+    expect(report.run.errors.map((error) => error.code)).toEqual(['COLLECTION_ERROR']);
+    expect(json.stderr).toMatch(reason);
+    const list = rerun(project, ['run', '--reporter', 'list,junit']);
+    expect(list.exitCode).toBe(2);
+    expect(list.stdout).toMatch(reason);
+    expect(timesNamed(list.output)).toBe(1);
   });
 });

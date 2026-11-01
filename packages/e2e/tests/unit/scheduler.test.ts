@@ -4,6 +4,7 @@
  * without spawning processes or browsers.
  */
 
+import { protocolEngine } from '../../src/engine/protocol/client.ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CollectedFile, CollectedTest, Collection } from '../../src/collect/collect.ts';
 import type {
@@ -15,9 +16,9 @@ import type {
 import type { ResolvedTarget } from '../../src/config/resolve.ts';
 import { defineEngine, type EngineHandle } from '../../src/engine/index.ts';
 import { classifyError, serializeError } from '../../src/internal/errors.ts';
-import type { AttemptRecord, ResultRecord, RunError, SerialGroupRecord, SerialMemberRecord } from '../../src/run/records.ts';
+import type { AttemptRecord, ResultRecord, RunError, SerialAttemptRecord, SerialGroupRecord, SerialMemberRecord } from '../../src/run/records.ts';
 import { runUnits } from '../../src/run/scheduler.ts';
-import { serialGroupId, type SerialAttemptRun } from '../../src/run/serial.ts';
+import { serialGroupId } from '../../src/run/serial.ts';
 import { buildWorkPlans, type TargetWorkPlan, type TimeLimit } from '../../src/run/units.ts';
 import type { SpawnUnitRunner, UnitRunner, UnitRunnerEvents } from '../../src/run/unit-runner.ts';
 import type { MainToWorker, RunUnitMessage } from '../../src/run/worker/protocol.ts';
@@ -65,7 +66,7 @@ function makeTarget(name: string, index: number, engine?: EngineHandle): Resolve
     name,
     index,
     platform: 'web',
-    engine,
+    engine: engine === undefined ? undefined : protocolEngine(engine),
     app: EMPTY_APP,
     declaredApp: EMPTY_DECLARED,
     trace: { mode: 'off', source: 'default' },
@@ -132,6 +133,7 @@ function makeSelection(perTarget: readonly { target: ResolvedTarget; pairs: Test
 
 interface FakeBehaviour {
   readonly shutdownUntil?: 'final' | 'terminate';
+  readonly disposal?: { readonly delayMs: number; readonly runErrors?: readonly RunError[] };
   readonly onControl?: (message: MainToWorker) => void;
   /** Statuses to report per test id; defaults to passed. */
   readonly status?: Record<string, ResultRecord['status']>;
@@ -154,7 +156,7 @@ interface FakeBehaviour {
   /** The hung pair starts its next attempt after `attemptsBeforeHang` and keeps running through an interrupt. */
   readonly startAttemptBeforeHang?: boolean;
   /** Serial group attempts the unit's pairs (one group) finish before the worker hangs. */
-  readonly serialRunsBeforeHang?: readonly SerialAttemptRun[];
+  readonly serialRunsBeforeHang?: readonly SerialAttemptRecord[];
   /** Members the group's next attempt finishes before the worker hangs. */
   readonly serialMembersBeforeHang?: readonly SerialMemberRecord[];
   /** Instead of hanging, the worker exits on its own once it sent what came before. */
@@ -210,6 +212,8 @@ const SLOW_TEARDOWN_MS = 12_000;
 
 class FakeFleet {
   readonly spawned: { targetName: string; workerSlot: number }[] = [];
+  readonly killed: number[] = [];
+  readonly completedDisposals: number[] = [];
   readonly unitsByWorker: RunUnitMessage[][] = [];
   /** Control messages every worker received, in order. */
   readonly controlMessages: MainToWorker['type'][] = [];
@@ -247,6 +251,7 @@ class FakeRunner implements UnitRunner {
   private finish!: () => void;
   private exited = false;
   private blocked = false;
+  private disposing = false;
 
   constructor(
     private readonly index: number,
@@ -290,6 +295,18 @@ class FakeRunner implements UnitRunner {
     if (message.type === 'shutdown') {
       if (this.behaviour.shutdownUntil === 'terminate') return;
       if (this.behaviour.shutdownUntil === 'final' && 'preserveResources' in message) return;
+      const disposal = this.behaviour.disposal;
+      if (disposal !== undefined) {
+        if (this.disposing) return;
+        this.disposing = true;
+        setTimeout(() => {
+          if (this.exited) return;
+          this.fleet.completedDisposals.push(this.index);
+          this.events.onMessage({ type: 'shutdown-done', runErrors: disposal.runErrors ?? [] });
+          this.end('shut down');
+        }, disposal.delayMs);
+        return;
+      }
       setTimeout(() => this.end('shut down'), 0);
       return;
     }
@@ -307,12 +324,12 @@ class FakeRunner implements UnitRunner {
       const first = message.pairs[0];
       for (const finishedRun of this.behaviour.serialRunsBeforeHang ?? []) {
         const groupId = serialGroupId(first!.test.serialId!, this.targetName, first!.agent, first!.repeat);
-        for (const [index, member] of finishedRun.record.members.entries()) {
+        for (const [index, member] of finishedRun.members.entries()) {
           const pair = message.pairs[index]!;
           this.events.onMessage({ type: 'pair-start', testId: pair.test.id, agent: pair.agent, repeat: pair.repeat, title: pair.test.id, file: pair.test.file, serialId: pair.test.serialId });
-          this.events.onMessage({ type: 'serial-member', groupId, attempt: finishedRun.record, member });
+          this.events.onMessage({ type: 'serial-member', groupId, attempt: finishedRun, member });
         }
-        this.events.onMessage({ type: 'serial-attempt', groupId, run: finishedRun });
+        this.events.onMessage({ type: 'serial-attempt', groupId, attempt: finishedRun });
       }
       const partial = this.behaviour.serialMembersBeforeHang ?? [];
       if (partial.length > 0) {
@@ -342,6 +359,7 @@ class FakeRunner implements UnitRunner {
   }
 
   kill(): void {
+    this.fleet.killed.push(this.index);
     this.end('killed');
   }
 
@@ -573,6 +591,81 @@ describe('time limit', () => {
       ['fails', undefined],
       ['hangs', 'failure-limit'],
     ]);
+  });
+});
+
+describe('scheduler disposal', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it.each(['retirement', 'final drain'] as const)('lets a worker finish a 12 s disposal within its configured budget during %s', async (path) => {
+    const target = makeTarget('web', 0);
+    const pairs = (path === 'retirement' ? ['first', 'next'] : ['first']).map((name) =>
+      makePair(makeTest(`tests/${name}.e2e.ts`, name), target),
+    );
+    const fleet = new FakeFleet({
+      disposal: { delayMs: 12_000 },
+      ...(path === 'retirement' ? { status: { [pairs[0]!.test.id]: 'failed' as const } } : {}),
+    });
+
+    vi.useFakeTimers();
+    const running = run(makeSelection([{ target, pairs }]), makeCollection(pairs.map((pair) => pair.test.file), pairs), fleet, {
+      workers: 1, forceGraceMs: 31_000,
+    });
+    await vi.advanceTimersByTimeAsync(11_000);
+
+    expect(fleet.killed).toEqual([]);
+    expect(fleet.completedDisposals).toEqual([]);
+    expect(fleet.live).toBe(1);
+    expect(fleet.spawned).toHaveLength(1);
+
+    await vi.runAllTimersAsync();
+    const collected = await running;
+    expect(fleet.killed).toEqual([]);
+    expect(fleet.completedDisposals).toEqual(path === 'retirement' ? [0, 1] : [0]);
+    expect(fleet.live).toBe(0);
+    expect(collected.results.map((result) => result.status)).toEqual(path === 'retirement' ? ['failed', 'passed'] : ['passed']);
+    expect(collected.runErrors).toEqual([]);
+  });
+
+  it('reports cleanup errors from a worker that finishes disposal after 12 s', async () => {
+    const target = makeTarget('web', 0);
+    const pair = makePair(makeTest('tests/a.e2e.ts', 'a'), target);
+    const cleanupError = { error: serializeError(classifyError(new Error('engine disposal failed'))) };
+    const fleet = new FakeFleet({ disposal: { delayMs: 12_000, runErrors: [cleanupError] } });
+
+    vi.useFakeTimers();
+    const running = run(makeSelection([{ target, pairs: [pair] }]), makeCollection([pair.test.file], [pair]), fleet, {
+      workers: 1, forceGraceMs: 31_000,
+    });
+    await vi.runAllTimersAsync();
+    const collected = await running;
+
+    expect(collected.runErrors).toEqual([cleanupError]);
+    expect(collected.results.map((result) => result.status)).toEqual(['passed']);
+    expect(fleet.killed).toEqual([]);
+    expect(fleet.completedDisposals).toEqual([0]);
+  });
+
+  it('kills a worker whose disposal outlasts its configured shutdown budget', async () => {
+    const target = makeTarget('web', 0);
+    const pair = makePair(makeTest('tests/a.e2e.ts', 'a'), target);
+    const fleet = new FakeFleet({ disposal: { delayMs: 12_000 } });
+
+    vi.useFakeTimers();
+    const running = run(makeSelection([{ target, pairs: [pair] }]), makeCollection([pair.test.file], [pair]), fleet, {
+      workers: 1, forceGraceMs: 7_000,
+    });
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(fleet.live).toBe(1);
+    expect(fleet.killed).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fleet.killed).toEqual([0]);
+    expect(fleet.live).toBe(0);
+    expect(fleet.completedDisposals).toEqual([]);
+    await running;
   });
 });
 
@@ -842,22 +935,20 @@ function memberRecord(pairs: readonly TestTargetPair[], attemptIndex: number, me
 }
 
 /** A finished group attempt whose members ended with `statuses`. */
-function groupRun(pairs: readonly TestTargetPair[], index: number, statuses: readonly ('passed' | 'failed')[]): SerialAttemptRun {
+function groupRun(pairs: readonly TestTargetPair[], index: number, statuses: readonly ('passed' | 'failed')[]): SerialAttemptRecord {
   const failed = statuses.includes('failed');
   return {
-    reachedMembers: true,
-    record: {
-      id: `group-attempt-${index}`,
-      index,
-      status: failed ? 'failed' : 'passed',
-      startedAt: '2026-01-01T00:00:00.000Z',
-      durationMs: 5,
-      members: statuses.map((status, memberIndex) => memberRecord(pairs, index, memberIndex, status)),
-      artifacts: [],
-      ...(failed ? { error: FAILED_ATTEMPT.error! } : {}),
-      secondaryErrors: [],
-      cleanup: 'complete',
-    },
+    id: `group-attempt-${index}`,
+    cutRetry: false,
+    index,
+    status: failed ? 'failed' : 'passed',
+    startedAt: '2026-01-01T00:00:00.000Z',
+    durationMs: 5,
+    members: statuses.map((status, memberIndex) => memberRecord(pairs, index, memberIndex, status)),
+    artifacts: [],
+    ...(failed ? { error: FAILED_ATTEMPT.error! } : {}),
+    secondaryErrors: [],
+    cleanup: 'complete',
   };
 }
 
@@ -1191,7 +1282,7 @@ describe('scheduler fault handling', () => {
 
     expect(collected.serialGroups).toHaveLength(1);
     expect(collected.serialGroups[0]!.status).toBe(verdict);
-    expect(collected.serialGroups[0]!.attempts).toEqual(runs.map((entry) => entry.record));
+    expect(collected.serialGroups[0]!.attempts).toEqual(runs);
     expect(collected.results.map((result) => result.status)).toEqual(results);
   });
 

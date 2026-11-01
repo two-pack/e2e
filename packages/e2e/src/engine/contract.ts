@@ -32,7 +32,11 @@ export interface OperationContext {
    * abort at `timeoutMs`: bound each call by that budget yourself.
    */
   readonly signal: AbortSignal;
-  /** Remaining operation budget when the call starts. */
+  /**
+   * Remaining operation budget when the call starts. A waiting call's last
+   * locate or read can get more than its deadline leaves: as long as the
+   * slowest one it has seen.
+   */
   readonly timeoutMs: number;
   /** The run id. */
   readonly runId: string;
@@ -82,7 +86,8 @@ export interface SemanticQuery {
 /**
  * The location capability's query language. `selector` is a platform-native
  * selector string (CSS or XPath on a document platform, a predicate on a
- * device platform); `frame` scopes a query inside one nested document.
+ * device platform); `frame` scopes a query inside one nested document;
+ * `union` matches either side, each node once, in document order.
  */
 export type LocatorExpression =
   | {
@@ -94,7 +99,9 @@ export type LocatorExpression =
       readonly kind: 'filter';
       readonly source: LocatorExpression;
       readonly hasText?: TextPattern;
+      readonly hasNotText?: TextPattern;
       readonly has?: LocatorExpression;
+      readonly hasNot?: LocatorExpression;
     }
   | {
       readonly kind: 'index';
@@ -109,6 +116,11 @@ export type LocatorExpression =
       readonly kind: 'frame';
       readonly selector: string;
       readonly source: LocatorExpression;
+    }
+  | {
+      readonly kind: 'union';
+      readonly left: LocatorExpression;
+      readonly right: LocatorExpression;
     };
 
 export interface NodeRef {

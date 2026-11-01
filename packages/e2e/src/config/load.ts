@@ -7,13 +7,10 @@ import { withConfigSecretReferences } from '../secrets.ts';
 import type { E2EConfig } from '../types.ts';
 import { explainModuleError } from './diagnose.ts';
 import { freshModuleURL, registerLoader } from './esm-hooks.ts';
-
-const CONFIG_NAMES = ['e2e.config.ts', 'e2e.config.mts'] as const;
+import { CONFIG_NAMES, JS_CONFIG_NAMES, TS_CONFIG_NAMES } from './names.ts';
 
 /** Spellings a config author might reach for that the loader does not read. */
 const CONFIG_LOOKALIKES = [
-  'e2e.config.js',
-  'e2e.config.mjs',
   'e2e.config.cjs',
   'e2e.config.cts',
   'e2e.config.json',
@@ -37,14 +34,13 @@ export interface DiscoveredConfig {
 export function discoverConfig(cwd: string, explicitPath?: string): DiscoveredConfig {
   if (explicitPath !== undefined) {
     const absolute = path.resolve(cwd, explicitPath);
-    if (!existsSync(absolute)) {
-      throw new ConfigurationError('CONFIG_NOT_FOUND', `config file not found: ${explicitPath}`);
-    }
+    if (!existsSync(absolute)) throw explicitConfigNotFound(cwd, explicitPath, absolute);
     return { configPath: absolute, projectRoot: path.dirname(absolute) };
   }
   let dir = path.resolve(cwd);
   for (;;) {
-    const present = CONFIG_NAMES.filter((name) => existsSync(path.join(dir, name)));
+    const typescript = TS_CONFIG_NAMES.filter((name) => existsSync(path.join(dir, name)));
+    const present = typescript.length > 0 ? typescript : JS_CONFIG_NAMES.filter((name) => existsSync(path.join(dir, name)));
     if (present.length > 1) {
       throw new ConfigurationError(
         'CONFIG_AMBIGUOUS',
@@ -64,6 +60,20 @@ export function discoverConfig(cwd: string, explicitPath?: string): DiscoveredCo
 }
 
 /**
+ * The failure for an explicit config path with no file behind it. A relative
+ * path names the `cwd` it resolved against (the process's working directory
+ * for the CLI and MCP server), which may not be the one the caller meant.
+ */
+function explicitConfigNotFound(cwd: string, explicitPath: string, absolute: string): ConfigurationError {
+  if (path.isAbsolute(explicitPath)) return new ConfigurationError('CONFIG_NOT_FOUND', `config file not found: ${absolute}`);
+  const base = path.resolve(cwd);
+  return new ConfigurationError(
+    'CONFIG_NOT_FOUND',
+    `config file not found: ${absolute} (${explicitPath} resolved against the working directory ${base}); pass an absolute path, or a path relative to that directory`,
+  );
+}
+
+/**
  * The failure for a run that found no config file: where the search looked,
  * a lookalike in the working directory when one exists, and otherwise the
  * command that creates a config. Thrown when a config file is discovered,
@@ -72,11 +82,12 @@ export function discoverConfig(cwd: string, explicitPath?: string): DiscoveredCo
 export function missingConfigError(cwd: string): ConfigurationError {
   const root = path.resolve(cwd);
   const lookalike = CONFIG_LOOKALIKES.find((name) => existsSync(path.join(root, name)));
-  const searched = `no ${CONFIG_NAMES.join(' or ')} found in ${root} or its parent directories`;
+  const names = `${CONFIG_NAMES.slice(0, -1).join(', ')}, or ${CONFIG_NAMES.at(-1)}`;
+  const searched = `no ${names} found in ${root} or its parent directories`;
   const remedy =
     lookalike === undefined
       ? 'run e2e init to create one, or pass --config <path>'
-      : `found ${lookalike}, but only ${CONFIG_NAMES.join(' and ')} are loaded: rename it and keep it an ES module`;
+      : `found ${lookalike}, but only ${names} is loaded: rename it and keep it an ES module`;
   return new ConfigurationError('CONFIG_NOT_FOUND', `${searched}; ${remedy}`);
 }
 
@@ -152,7 +163,7 @@ export async function loadConfigModule(configPath: string, options: ConfigLoadOp
         : `default-exports ${typeof defaultExport === 'function' ? 'a function' : `a ${typeof defaultExport}`}`;
     throw new ConfigurationError(
       'INVALID_CONFIG',
-      `config ${configPath} ${found}; write export default { targets: [...] } satisfies E2EConfig`,
+      `config ${configPath} ${found}; write export default { targets: [...] }${/\.m?js$/u.test(configPath) ? '' : ' satisfies E2EConfig'}`,
     );
   }
   return defaultExport as E2EConfig;

@@ -114,6 +114,11 @@ export interface SerialMemberRecord {
 
 export interface SerialAttemptRecord {
   id: string;
+  /**
+   * The retry was interrupted, or it never reached its members, so this
+   * attempt's member records are not the verdict.
+   */
+  cutRetry: boolean;
   index: number;
   status: 'passed' | 'failed' | 'timed-out' | 'interrupted';
   startedAt: string;
@@ -207,6 +212,15 @@ export interface FailureBeforeSkip {
   readonly failure: FailureEvidence | undefined;
   /** The failing attempt's artifacts; for a serial member, the group attempt's. */
   readonly artifacts: readonly ArtifactRecord[];
+}
+
+/** The cleanup-phase secondary errors of attempts whose cleanup failed. */
+export function cleanupErrorsOf(
+  attempts: readonly { readonly cleanup: string; readonly secondaryErrors: readonly SerializedError[] }[],
+): SerializedError[] {
+  return attempts.flatMap((attempt) =>
+    attempt.cleanup === 'failed' ? attempt.secondaryErrors.filter((secondary) => secondary.phase === 'cleanup') : [],
+  );
 }
 
 /**

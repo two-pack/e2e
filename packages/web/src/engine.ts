@@ -26,9 +26,11 @@ import { createBrowserFixture } from './browser.ts';
 import { validateInitScripts } from './init-scripts.ts';
 import { MEDIA_KEYS, mediaProblem } from './media.ts';
 import { FIELD_VALUE_CONTROL, headerProblem } from './protected-app.ts';
+import { validatePermissions } from './permissions.ts';
+import type { BrowserName } from './browser-connection.ts';
 
 /** App fields only a device target reads. */
-const NATIVE_APP_KEYS = ['bundleId', 'appPath', 'launchArguments', 'permissions'] as const;
+const NATIVE_APP_KEYS = ['bundleId', 'appPath', 'launchArguments'] as const;
 
 /** Creates one Playwright engine: one browser per worker, one context per attempt. */
 const surfaces = new WeakMap<EngineHandle, PlaywrightSurface>();
@@ -128,7 +130,8 @@ export function web(options: WebOptions = {}): EngineHandle {
       type: (text, keyboardOptions, operation) => surface.typeText(text, keyboardOptions, operation),
       press: (key, operation) => surface.pressKey(key, operation),
     },
-    validateApp,
+    // A provider or a CDP attach speaks CDP, so it takes Chromium's names.
+    validateApp: (app, info) => validateApp(app, info, typeof options.browser === 'string' ? options.browser : 'chromium'),
     codegen: playwrightCodegen(options.testIdAttribute, {
       ...(typeof options.browser === 'string' ? { browserName: options.browser } : {}),
       ...(options.viewport === undefined ? {} : { viewport: options.viewport }),
@@ -412,9 +415,9 @@ function validateTestIdAttribute(attribute: unknown): void {
 /**
  * A browser target opens a URL: without `app.url` there is nothing for
  * `app.open()` to open, and the fields that describe an installed device app
- * have nothing to act on here.
+ * have nothing to act on here. `permissions` must be ones `browser` grants.
  */
-function validateApp(app: EngineAppDeclaration, { targetName }: EngineAppCheckInfo): void {
+function validateApp(app: EngineAppDeclaration, { targetName }: EngineAppCheckInfo, browser: BrowserName): void {
   for (const key of NATIVE_APP_KEYS) {
     if (app[key] !== undefined) {
       throw new ConfigurationError(
@@ -429,6 +432,7 @@ function validateApp(app: EngineAppDeclaration, { targetName }: EngineAppCheckIn
       `target "${targetName}" needs app.url: a web() target opens the app at a URL, targets: [{ engine: web(), app: { url: 'http://localhost:3000' } }]`,
     );
   }
+  if (app.permissions !== undefined) validatePermissions(targetName, browser, app.permissions);
 }
 
 /** This package's published version, read through require resolution. */

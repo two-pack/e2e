@@ -1,6 +1,6 @@
 {
   "name": "@e2e-dev/web",
-  "version": "0.15.2",
+  "version": "0.15.4",
   "description": "Web engine for e2e agentic end-to-end testing, built on Playwright",
   "keywords": [
     "e2e",
@@ -56,19 +56,19 @@
   },
   "dependencies": {
     "oxc-parser": "0.152.0",
-    "playwright-core": "1.64.0"
+    "playwright-core": "1.64.1"
   },
   "peerDependencies": {
     "e2e": ">=0.18.0 <1"
   },
   "devDependencies": {
-    "@playwright/test": "1.64.0",
-    "@types/node": "26.6.2",
+    "@playwright/test": "1.64.1",
+    "@types/node": "26.6.6",
     "@types/pngjs": "6.0.5",
     "e2e": "workspace:*",
     "pngjs": "7.0.0",
     "typescript": "7.0.2",
-    "vitest": "5.0.1"
+    "vitest": "5.0.5"
   },
   "engines": {
     "node": "^22.22.3 || >=24.8.0"

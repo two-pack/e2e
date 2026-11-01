@@ -11,7 +11,7 @@ import type { AgentCacheContext } from '../cache/context.ts';
 import type { ResolvedAgentConfig } from '../config/agent.ts';
 import type { ResolvedApp, ResolvedConfig } from '../config/resolve.ts';
 import type { EngineCapability } from '../engine/index.ts';
-import type { TargetSession, Observation } from '../engine/surface.ts';
+import type { TargetSession } from '../engine/surface.ts';
 import type { DebugTrace } from '../internal/debug.ts';
 import { timestamp } from '../internal/ids.ts';
 import { Deadline } from '../internal/time.ts';
@@ -19,7 +19,6 @@ import type { LocatorEngine } from '../locator/engine.ts';
 import type { SecretResolver } from '../locator/screen.ts';
 import type { ArtifactSink } from '../run/fixtures.ts';
 import type { CodegenLog } from '../run/codegen.ts';
-import type { SecretExposure } from '../run/secrecy.ts';
 import type {
   StepEvent,
   StepMetrics,
@@ -28,7 +27,7 @@ import type {
   StepRecorder,
   VisionDegradation,
 } from '../run/steps.ts';
-import type { VisionMode } from '../types.ts';
+import type { JsonValue, VisionMode } from '../types.ts';
 import { AgentError } from './error.ts';
 import { ModelUsage, reasoningField, tokenFields } from './usage.ts';
 import type { ExecutorAttempt, StepExecutor } from './executor.ts';
@@ -114,8 +113,6 @@ export interface AgentContext {
   readonly redact: (text: string) => string;
   /** The same ledger's redaction for text an engine cut at a length limit. */
   readonly redactCut: (text: string) => string;
-  /** How far a secret reached the session; once one was filled, no pixels leave it for the rest of the attempt. */
-  readonly exposure: SecretExposure;
   readonly artifacts: ArtifactSink;
   /** The attempt's trace cache, or undefined when caching is off. */
   readonly cache?: AgentCacheContext;
@@ -132,6 +129,8 @@ export interface InvocationOptions {
   readonly agent?: string | undefined;
   /** Caller's instruction, e.g. the target phrase, used for debug step labels. */
   readonly label?: string;
+  /** The values the instruction refers to, projected and redacted; every prompt carries them, and the input budget counts them. */
+  readonly params?: Readonly<Record<string, JsonValue>> | undefined;
   /** Short task description placed in the system message. */
   readonly task: string;
   readonly timeoutMs: number;
@@ -139,8 +138,7 @@ export interface InvocationOptions {
   /**
    * Whether masked viewport pixels travel alongside the semantic tree.
    * Additive in every mode: the tree is always sent, and pixel evidence
-   * degrades away under taint or unprovable masking rather than failing the
-   * call.
+   * degrades away under unprovable masking rather than failing the call.
    */
   readonly vision: VisionMode;
   /**
@@ -177,6 +175,7 @@ export class Invocation {
 
   private readonly usage = new ModelUsage();
   private observationRevision: string | undefined;
+  private observationTruncated = false;
   /** Absent when capture failed before the judge received evidence. */
   private explanation: string | undefined;
   private visionInput = false;
@@ -199,7 +198,9 @@ export class Invocation {
     this.pixelTier = options.vision === true || options.vision === 'only';
     this.system = runtime.redact(buildSystem(options.task, this.agent.agentContext));
     this.systemBytes = tokenUpperBound(this.system);
-    this.instructionBytes = tokenUpperBound(runtime.redact(options.label ?? ''));
+    this.instructionBytes =
+      tokenUpperBound(runtime.redact(options.label ?? '')) +
+      (options.params === undefined ? 0 : tokenUpperBound(JSON.stringify(options.params)));
   }
 
   get session(): TargetSession {
@@ -234,16 +235,20 @@ export class Invocation {
   /** Captures and redacts one fresh observation. */
   async observe(): Promise<AgentObservation> {
     this.checkDeadline();
-    const pixels = this.pixelsRequested();
     const observation = await this.instrument(
       { kind: 'observation', phase: 'agent.observe' },
       async () => {
-        const raw = await this.captureObservation(pixels);
+        const pixelsAllowed = this.options.vision !== false;
+        const raw = await retryingObserve({
+          capture: () => this.session.observe(this.operation(), { pixels: this.pixelTier, pixelFallback: pixelsAllowed }),
+          guard: (cause) => this.checkDeadline(cause),
+          signal: this.runtime.engine.signal,
+        });
         const prepared = prepareObservation(raw, {
           redact: this.runtime.redact,
           redactCut: this.runtime.redactCut,
           maxBytes: this.observationByteBudget(),
-          pixelsAllowed: this.options.vision !== false && !this.runtime.exposure.withholdsPixels,
+          pixelsAllowed,
           appOrigin: this.runtime.app.base?.origin,
         });
         return prepared;
@@ -255,41 +260,17 @@ export class Invocation {
       this.metrics.observationBytes = Math.max(this.metrics.observationBytes, observation.bytes);
     }
     this.observationRevision = observation.revision;
-    if (pixels || observation.kind === 'pixels') this.recordPixels(observation);
+    if (observation.kind === 'semantic' && observation.truncated) {
+      this.observationTruncated = true;
+    }
+    if (this.pixelTier || observation.kind === 'pixels') this.recordPixels(observation);
     this.runtime.codegen?.seen.saw(observation, this.runtime.redact);
     return observation;
   }
 
-  /** Captures one raw observation through the shared race-hardened path. */
-  private captureObservation(pixels: boolean): Promise<Observation> {
-    return retryingObserve({
-      observe: (operation, pixelFallback) => this.session.observe(operation, { pixels, pixelFallback }),
-      operation: () => this.operation(),
-      guard: (cause) => this.checkDeadline(cause),
-      signal: this.runtime.engine.signal,
-      api: this.options.api,
-      fallback: this.options.vision !== false,
-      tainted: () => this.runtime.exposure.withholdsPixels,
-    });
-  }
-
-  /**
-   * Whether this observation should carry pixels. A tainted viewport degrades
-   * the call to tree-only input instead of failing it: the tree is still fully
-   * redacted, and only the unprovable evidence is dropped.
-   */
-  private pixelsRequested(): boolean {
-    if (!this.pixelTier) return false;
-    if (this.runtime.exposure.withholdsPixels) {
-      this.loseVision('PIXEL_TAINTED');
-      return false;
-    }
-    return true;
-  }
-
   /** Records whether requested pixels actually became model input. */
   private recordPixels(observation: AgentObservation): void {
-    const outcome = pixelsForModel(observation, this.runtime.exposure.withholdsPixels);
+    const outcome = pixelsForModel(observation);
     if ('withheld' in outcome) {
       this.loseVision(outcome.withheld);
       return;
@@ -358,6 +339,8 @@ export class Invocation {
       const prompt = this.runtime.redact(
         buildPrompt({
           ...request.prompt,
+          ...(this.options.params === undefined ? {} : { params: this.options.params }),
+          titlePath: this.runtime.attempt.titlePath,
           ...(this.treeWithheld ? { withholdTree: true } : {}),
           ...(repair === undefined
             ? {}
@@ -482,6 +465,7 @@ export class Invocation {
       ...(this.observationRevision !== undefined
         ? { observationRevision: this.observationRevision }
         : {}),
+      ...(this.observationTruncated ? { observationTruncated: true } : {}),
       ...(this.explanation !== undefined ? { explanation: this.explanation } : {}),
       ...(this.visionInput ? { visionInput: true } : {}),
       ...(this.treeWithheld ? { visionOnly: true } : {}),

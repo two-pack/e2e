@@ -1,5 +1,49 @@
 # @e2e-dev/web
 
+## 0.15.4
+
+### Patch Changes
+
+- [#1334](https://github.com/tester-army/e2e/pull/1334) [`6c8e71f`](https://github.com/tester-army/e2e/commit/6c8e71f1ddab036d5cd82ca671163de6e9e82ca0) Thanks [@21prnv](https://github.com/21prnv)! - `locator.filter()` takes `hasNot`, which drops matches whose subtree resolves a locator, as in Playwright. Third-party engines must handle the new `hasNot` field of a `filter` expression.
+
+- [#1048](https://github.com/tester-army/e2e/pull/1048) [`7f4475c`](https://github.com/tester-army/e2e/commit/7f4475cef9a6eed5b187e0ba898769d7aab15fe3) Thanks [@rudycelekli](https://github.com/rudycelekli)! - Add `browser.waitForDownloads(trigger, { count })` to collect several files from one trigger. `waitForDownload` now also bounds completion and saving by its timeout.
+
+- [#1037](https://github.com/tester-army/e2e/pull/1037) [`a481fd3`](https://github.com/tester-army/e2e/commit/a481fd39c69e3e0f88a94c1fe3f4acada164cbf6) Thanks [@rudycelekli](https://github.com/rudycelekli)! - `locator.filter()` takes `hasNotText`, which drops matches whose text contains a string or matches a RegExp, as in Playwright. Third-party engines must handle the new `hasNotText` field of a `filter` expression.
+
+- [#1044](https://github.com/tester-army/e2e/pull/1044) [`555e226`](https://github.com/tester-army/e2e/commit/555e226dc5e44132a9e34ab3043c777f828d45f6) Thanks [@rudycelekli](https://github.com/rudycelekli)! - Add `route.fetch()` to read the upstream response inside a route handler before deciding it.
+
+- [#1288](https://github.com/tester-army/e2e/pull/1288) [`8ce2c65`](https://github.com/tester-army/e2e/commit/8ce2c6533caf0596b16d31d3588cb6720c863176) Thanks [@DeryFerd](https://github.com/DeryFerd)! - Screenshots no longer change the inline style of editable elements to hide the text caret, so a server-rendered app hydrating while a capture runs no longer reports a React attribute mismatch on its inputs and textareas. A capture runs with the caret hidden in the frames it can reach, and the stylesheet is taken back from every frame afterwards.
+
+- [#1046](https://github.com/tester-army/e2e/pull/1046) [`5879bfc`](https://github.com/tester-army/e2e/commit/5879bfc6ba9a76c6d5fc77f1454ff3fde9b2e5a3) Thanks [@rudycelekli](https://github.com/rudycelekli)! - Add selective cookie clearing with validated name, domain and path filters, preserving other browser storage.
+
+- [#958](https://github.com/tester-army/e2e/pull/958) [`85e92f9`](https://github.com/tester-army/e2e/commit/85e92f91f1c5415850ca4456ee5f4e2a81a6b648) Thanks [@kuishou68](https://github.com/kuishou68)! - `upload` and `setInputFiles` accept a button that opens a file chooser, such as one over a hidden file input. The agent's `upload` tool says so, so the model can pick the button it sees.
+
+- [#1429](https://github.com/tester-army/e2e/pull/1429) [`3a841bb`](https://github.com/tester-army/e2e/commit/3a841bb99e5ecc050154c9e6d7f696a6226c3980) Thanks [@KrzysztofMoch](https://github.com/KrzysztofMoch)! - A `web()` target takes `app.permissions` with `'grant'` states, granted to every page of the attempt: `permissions: { 'clipboard-read': 'grant', 'clipboard-write': 'grant' }` lets the app use the clipboard in headless Chromium. Names are checked against the browser's at config load; `'deny'` and `'reset'` are refused on web.
+
+- [#1448](https://github.com/tester-army/e2e/pull/1448) [`cdf910a`](https://github.com/tester-army/e2e/commit/cdf910a9ae34569d8fddd4e720e0cabd1e95c0f3) Thanks [@KrzysztofMoch](https://github.com/KrzysztofMoch)! - Screenshots no longer fail with `ENGINE_FAILURE` ("closed-shadow root tracking is unavailable") on a page that replaces the global `WeakMap`, as some polyfills do. On such pages, locators find elements inside closed shadow roots again, and CDP reconnects no longer fail.
+
+## 0.15.3
+
+### Patch Changes
+
+- [#1041](https://github.com/tester-army/e2e/pull/1041) [`491199e`](https://github.com/tester-army/e2e/commit/491199e589c5b9c0a9ed72cbeab6a1e83784fe03) Thanks [@rudycelekli](https://github.com/rudycelekli)! - Add browser.unrouteAll to clear every route registered through the browser fixture while preserving configured site headers.
+
+- [#1275](https://github.com/tester-army/e2e/pull/1275) [`6a59d1a`](https://github.com/tester-army/e2e/commit/6a59d1acfba13745ce126817e3226cee71d033e5) Thanks [@kacperkapusciak](https://github.com/kacperkapusciak)! - Update dependencies: the web engine drives Playwright 1.64.1 (and the Chromium it installs), and smol machines boot the matching `mcr.microsoft.com/playwright:v1.64.1-noble` image. The runner moves to `oxc-parser`, `oxc-transform`, and `@oxc-project/runtime` 0.154.0, `@vitest/expect` 5.0.5, and `@ai-sdk/provider` 4.0.28.
+
+- [#1050](https://github.com/tester-army/e2e/pull/1050) [`f7c7672`](https://github.com/tester-army/e2e/commit/f7c76720bfdf5f830daef5557edae51f38c8dccb) Thanks [@rudycelekli](https://github.com/rudycelekli)! - Expose the native dialog kind to browser.onDialog handlers.
+
+- [#900](https://github.com/tester-army/e2e/pull/900) [`d7a6518`](https://github.com/tester-army/e2e/commit/d7a6518a28775545a430b1e79ad8814052707df8) Thanks [@rudycelekli](https://github.com/rudycelekli)! - Exclude explicitly hidden select options before applying the observation choice limit, retaining normal closed-select choices and disabled states.
+
+- [#1049](https://github.com/tester-army/e2e/pull/1049) [`137b50f`](https://github.com/tester-army/e2e/commit/137b50f0c8505a01ca53e4eb4c38df95e12bd395) Thanks [@rudycelekli](https://github.com/rudycelekli)! - Add `locator.or(other)`, which matches either locator in document order and stays strict when both match. Third-party engines must handle the new `union` kind of `LocatorExpression`.
+
+- [#1320](https://github.com/tester-army/e2e/pull/1320) [`c23944c`](https://github.com/tester-army/e2e/commit/c23944cbcfaf0b150180d4f4fb09d2aaf73f8233) Thanks [@kblok](https://github.com/kblok)! - Keep a Playwright timeout an `OPERATION_TIMEOUT` when its call log mentions a detached element or a navigation, instead of reporting a retryable `NODE_STALE`.
+
+- [#1022](https://github.com/tester-army/e2e/pull/1022) [`ff3bf39`](https://github.com/tester-army/e2e/commit/ff3bf3917f2b5bb0f81e5bc5f4fdaa24d023afd0) Thanks [@Bortlesboat](https://github.com/Bortlesboat)! - Allow `browser.waitForResponse` before the first `browser.goto` or `app.open`.
+
+- [#871](https://github.com/tester-army/e2e/pull/871) [`f56be22`](https://github.com/tester-army/e2e/commit/f56be22f0eeab818be31b4484bb3d31f319a2929) Thanks [@nvtoan0201-swe](https://github.com/nvtoan0201-swe)! - The tree ignores `role="presentation"` and `role="none"` on a focusable element or one with a global ARIA attribute, and keeps an `<img alt="">` with a `title`, `tabindex`, or global ARIA attribute an `image`, matching `getByRole`.
+
+- [#1209](https://github.com/tester-army/e2e/pull/1209) [`ef977f4`](https://github.com/tester-army/e2e/commit/ef977f4856da009cac26d78d2e9bb14e5991ee41) Thanks [@knowbody](https://github.com/knowbody)! - Engine disposal receives optional revocable permission to preserve run-owned resources for a replacement worker. Final shutdown, forced termination, and parent disconnect revoke that permission while disposal is pending. Each worker still invokes an engine's disposal hook one time. Missing permission requests final cleanup, including direct and standalone calls.
+
 ## 0.15.2
 
 ### Patch Changes

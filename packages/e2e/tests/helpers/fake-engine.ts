@@ -133,6 +133,11 @@ export interface FakeEngineBehavior {
   tapModifiers?: boolean;
   /** Declares `session.back`, `restart`, and `reset` beside `open`; with a scene, the last two close the app. */
   navigation?: boolean;
+  /**
+   * A device with a pinned app: no `session.open`, and `restart` relaunches
+   * the app, opening the scene at the fake's location. Overrides `navigation`.
+   */
+  device?: boolean;
   /** Declares the state capability. */
   state?: boolean;
   /** Declares the artifacts capability (screenshot only). */
@@ -145,6 +150,8 @@ export interface FakeEngineBehavior {
   video?: boolean;
   /** Links `stopVideo` reports before its file, as `video/mp4` segments starting with it. */
   videoLinks?: readonly string[];
+  /** Throw to fail video finalization (`stopVideo`). */
+  onStopVideo?(attemptIndex: number): void | Promise<void>;
   /** Throw to fail state restore after startAttempt succeeded. */
   onRestore?(state: EngineState): void | Promise<void>;
   /** Contributes a `gadget` fixture exercising every fixture-context facility. */
@@ -295,7 +302,13 @@ export function createFakeEngine(behavior: FakeEngineBehavior = {}): FakeEngineH
     },
     actions: behavior.actions ?? LOCATOR_ACTION_KINDS.filter((kind) => kind !== 'swipe'),
     ...(behavior.secrets === undefined ? {} : { secrets: behavior.secrets }),
-    session: {
+    session: behavior.device === true ? {
+      async restart(operation) {
+        record('session.restart', operation);
+        calls.push({ kind: 'session', attemptId: operation.attemptId, method: 'restart' });
+        sceneOf(operation)?.open(location);
+      },
+    } : {
       async open(url, operation) {
         record(`session.open(${url})`, operation);
         calls.push({ kind: 'session', attemptId: operation.attemptId, method: 'open', url });
@@ -454,6 +467,7 @@ export function createFakeEngine(behavior: FakeEngineBehavior = {}): FakeEngineH
                   },
                   async stopVideo(operation) {
                     record('artifacts.stopVideo', operation);
+                    await behavior.onStopVideo?.(current);
                     const dir = attempts[current]?.artifactsDir;
                     if (dir === undefined || videoStartedAt === undefined) return [];
                     mkdirSync(path.join(dir, 'video'), { recursive: true });

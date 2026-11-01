@@ -300,9 +300,8 @@ artifacts: the note is meant to be acted on after the run that wrote it, and
 a later run clears the artifacts. An `agent.assert` reuses the screenshot it
 keeps as evidence; an `agent.waitFor`, an `agent.extract`, and a custom
 executor's assertion take one only when their checks leave a gap. It is
-masked like every screenshot the run keeps, and none is taken once a secret
-was filled in the attempt, nor for an `agent.assert` called with
-`screenshot: false`; the comment then says why.
+masked like every screenshot the run keeps, and none is taken for an
+`agent.assert` called with `screenshot: false`; the comment then says why.
 
 The run ends with a warning that points at each such judgment:
 

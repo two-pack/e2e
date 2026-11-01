@@ -85,6 +85,30 @@ describe('renderJunitReport', () => {
     expect(rootAttributes(xml)).toMatchObject({ tests: '1', skipped: '0' });
   });
 
+  it('renders a test a filter left out as a skipped case naming the filter and its reason, so a run the filters left empty is not an empty file', () => {
+    const leftOut = reportResult({
+      id: 'result-2',
+      testId: 'test-2',
+      titlePath: ['pays'],
+      file: 'tests/billing.e2e.ts',
+      selected: false,
+      status: 'skipped',
+      skip: { cause: 'filtered', reason: 'Jev: 4% likely affected', filter: 'jev' },
+      attempts: [],
+    });
+    const xml = render(reportDocument({ results: [leftOut] }));
+    expect(xml).toContain(
+      [
+        '  <testsuite name="tests/billing.e2e.ts" tests="1" failures="0" errors="0" skipped="1" time="0.000">',
+        '    <testcase name="pays [web]" classname="tests/billing.e2e.ts" time="0.000">',
+        '      <skipped message="left out by filter jev: Jev: 4% likely affected"/>',
+        '    </testcase>',
+        '  </testsuite>',
+      ].join('\n'),
+    );
+    expect(rootAttributes(xml)).toMatchObject({ tests: '1', skipped: '1' });
+  });
+
   it('renders a passed result as a bare testcase named by title path and target', () => {
     const xml = render(reportDocument({ results: [reportResult()] }));
     expect(xml).toContain(
@@ -121,6 +145,52 @@ describe('renderJunitReport', () => {
     expect(xml).toContain('<system-out>flaky: 1 failed attempt before passing</system-out>');
     expect(xml).not.toContain('<failure');
     expect(rootAttributes(xml)).toMatchObject({ tests: '1', failures: '0', errors: '0' });
+  });
+
+  it('times a failed test by its failed attempt when the run interrupted its retry', () => {
+    const xml = render(
+      reportDocument({
+        results: [
+          reportResult({
+            status: 'failed',
+            attempts: [
+              reportAttempt({ index: 0, status: 'failed', durationMs: 5000, error: reportError() }),
+              reportAttempt({ id: 'attempt-2', index: 1, status: 'interrupted', durationMs: 20 }),
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(xml).toContain('time="5.000">');
+  });
+
+  it.each(['interrupted', 'failed'] as const)('times a failed serial member by its verdict when a %s retry was cut', (status) => {
+    const member = { index: 0, testId: 'test-1', startedAt: AT, steps: [], secondaryErrors: [] };
+    const group: ReportSerialGroup = {
+      id: 'group-1',
+      serialId: 'checkout',
+      declarationIndex: 0,
+      file: 'tests/checkout.e2e.ts',
+      source: { file: 'tests/checkout.e2e.ts', line: 1, column: 1 },
+      titlePath: ['checkout'],
+      targetId: 'web',
+      platform: 'web',
+      agent: 'default',
+      repeat: 0,
+      memberTestIds: ['test-1'],
+      status: 'failed',
+      attempts: [
+        { ...reportAttempt({ status: 'failed', durationMs: 1300 }), status: 'failed', members: [{ ...member, id: 'member-1', status: 'failed', durationMs: 1250, error: reportError() }] },
+        { ...reportAttempt({ id: 'attempt-2', index: 1, status, durationMs: 20 }), status, cutRetry: true, members: [{ ...member, id: 'member-2', status: status === 'failed' ? 'failed' : 'skipped', durationMs: 0, ...(status === 'failed' ? { error: reportError({ message: 'retry launch failed' }) } : {}) }] },
+      ],
+    };
+    const xml = render(
+      reportDocument({
+        serialGroups: [group],
+        results: [reportResult({ status: 'failed', serialGroupId: 'group-1', attempts: [] })],
+      }),
+    );
+    expect(xml).toContain('time="1.250">');
   });
 
   it('renders a test-category error as <failure> with code, message, and body', () => {
@@ -366,6 +436,7 @@ describe('renderJunitReport', () => {
       attempts: [
         {
           ...reportAttempt({ status: 'failed', durationMs: 3000 }),
+          status: 'failed',
           members: [
             {
               id: 'member-1',

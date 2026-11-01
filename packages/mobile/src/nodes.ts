@@ -35,6 +35,8 @@ export interface ProjectedSnapshot {
   /** Every node in document order, parents before children. */
   readonly index: readonly ProjectedNode[];
   readonly viewport: ViewportSize | undefined;
+  /** The agent-device capture the refs were issued from; undefined from one that reports none. */
+  readonly refsGeneration: number | undefined;
 }
 
 /**
@@ -95,10 +97,30 @@ const ROLE_MAP: Readonly<Record<string, string>> = {
 
 const SECURE_KINDS = new Set(['secure-text-field', 'securetextfield', 'password-field']);
 const TEXT_INPUT_ROLES = new Set(['textbox', 'searchbox', 'combobox']);
+
+/**
+ * Whether a node may take typed text: a text input role, or an `other` (only
+ * iOS reports one, for an element it did not classify) that holds a value or
+ * nothing but text. agent-device 0.21.33's simulator AX tree reports a
+ * custom-drawn field (Compose Multiplatform, Flutter) that way: a filled one
+ * with its text as the value, an empty one over the placeholder it draws.
+ * A childless, valueless `other`, such as a React Native `Pressable`, and a
+ * container of controls stay refused.
+ */
+export function mayTakeText(node: SemanticNode): boolean {
+  if (node.role === undefined) return false;
+  if (TEXT_INPUT_ROLES.has(node.role)) return true;
+  if (node.role !== 'other') return false;
+  if (node.value !== undefined) return true;
+  const children = node.children ?? [];
+  return children.length > 0 && children.every((child) => child.role === 'text' && child.children === undefined);
+}
+
 const CHECKABLE_ROLES = new Set(['switch', 'checkbox']);
 const CHECKED_VALUES = new Set(['1', 'on', 'true', 'checked', 'selected']);
 const UNCHECKED_VALUES = new Set(['0', 'off', 'false', 'unchecked']);
-const SCREEN_KINDS = new Set(['application', 'app', 'window']);
+/** Kinds that span the screen and hold everything else. */
+export const SCREEN_KINDS: ReadonlySet<string> = new Set(['application', 'app', 'window']);
 
 /**
  * The role descriptions React Native writes into an iOS view's accessibility
@@ -283,6 +305,46 @@ function describedRole(source: RawNode): string | undefined {
   return REACT_NATIVE_ROLE_DESCRIPTIONS[source.roleDescription.toLowerCase()];
 }
 
+/**
+ * Whether a field is empty and showing its hint, whose text the platform
+ * reports as the value. UIAutomator flags it with `hintShowing`. XCTest has
+ * no flag: an empty iOS field reports its placeholder as its value, so a
+ * value equal to the placeholder reads as empty, the same test agent-device's
+ * runner makes. A field holding exactly its placeholder text reads empty too;
+ * the snapshot cannot tell the two apart.
+ */
+function showsHint(source: RawNode, android: boolean, editable: boolean): boolean {
+  if (source.hintShowing === true) return true;
+  if (android || !editable) return false;
+  const placeholder = source.placeholder?.trim();
+  return placeholder !== undefined && placeholder !== '' && source.value?.trim() === placeholder;
+}
+
+/**
+ * The placeholder an empty iOS field folds into its label, with the child
+ * that draws it. Compose Multiplatform reports no placeholder: it draws one
+ * as a text inside the field and appends that text to the field's label, so
+ * an empty "Name" field with the example "Ada Lovelace" reads
+ * `"Name, Ada Lovelace"` over one `StaticText` child. Undefined unless the
+ * field's only child is that text and the field has a label of its own.
+ */
+function foldedPlaceholder(
+  source: RawNode,
+  kids: readonly number[],
+  raw: readonly RawNode[],
+  children: ReadonlyMap<number, readonly number[]>,
+): { label: string; placeholder: string; child: number } | undefined {
+  if (kids.length !== 1) return undefined;
+  const child = kids[0] as number;
+  const text = raw[child] as RawNode;
+  if (children.has(child)) return undefined;
+  const placeholder = nonEmpty(text.label);
+  const label = source.label;
+  if (kindOf(text) !== 'static-text' || placeholder === undefined || label === undefined) return undefined;
+  if (!label.endsWith(`, ${placeholder}`) || label.length === placeholder.length + 2) return undefined;
+  return { label: label.slice(0, -(placeholder.length + 2)), placeholder, child };
+}
+
 /** The string itself, or undefined for an absent or empty one. */
 function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value === '' ? undefined : value;
@@ -390,7 +452,7 @@ function isSystemBar(node: RawNode, screen: ViewportSize | undefined, displayOnl
  */
 export function projectSnapshot(
   raw: readonly RawNode[],
-  options: { readonly mintId: () => string; readonly viewport?: ViewportSize | undefined },
+  options: { readonly mintId: () => string; readonly viewport?: ViewportSize | undefined; readonly refsGeneration?: number | undefined },
 ): ProjectedSnapshot {
   const viewport = options.viewport ?? viewportOf(raw);
   const parents = parentPositions(raw);
@@ -418,9 +480,7 @@ export function projectSnapshot(
     const spelled = android || kind !== 'other' ? undefined : reactNativeValue(source.value);
     const role = editableRole(spelled?.role ?? describedRole(source) ?? roleOf(kind, android, parent?.kind), source.editable);
     const editable = source.editable === true || (role !== undefined && TEXT_INPUT_ROLES.has(role));
-    // A field showing its hint is empty: XCTest reports the placeholder as the
-    // value of an empty text field, and the bridge flags that with hintShowing.
-    const value = source.hintShowing === true ? '' : spelled === undefined ? source.value : spelled.value;
+    const value = showsHint(source, android, editable) ? '' : spelled === undefined ? source.value : spelled.value;
     // iOS names a secure field by class; UIAutomator flags a password
     // `EditText` by attribute, the class being the plain one.
     const secure = SECURE_KINDS.has(kind) || source.password === true;
@@ -435,9 +495,12 @@ export function projectSnapshot(
       ...(spelled?.states.expanded === undefined ? {} : { expanded: spelled.states.expanded }),
     };
     const identifier = nonEmpty(source.identifier);
-    const label = nonEmpty(source.label);
+    const kids = children.get(position) ?? [];
+    const blank = editable && !secure && (value === undefined || value === '') && nonEmpty(source.placeholder) === undefined;
+    const folded = !android && blank ? foldedPlaceholder(source, kids, raw, children) : undefined;
+    const label = folded === undefined ? nonEmpty(source.label) : folded.label;
     const name = nonEmpty(source.contentDescription) ?? label;
-    const placeholder = nonEmpty(source.placeholder);
+    const placeholder = folded?.placeholder ?? nonEmpty(source.placeholder);
     const projected: { node: SemanticNode | undefined } = { node: undefined };
     const entry: ProjectedNode = {
       id,
@@ -450,7 +513,7 @@ export function projectSnapshot(
       },
     };
     index.push(entry);
-    const childNodes = (children.get(position) ?? []).map((child) => build(child, entry));
+    const childNodes = kids.filter((child) => child !== folded?.child).map((child) => build(child, entry));
     const node: SemanticNode = {
       ref: { id, revision: '' },
       ...(role === undefined ? {} : { role }),
@@ -492,7 +555,7 @@ export function projectSnapshot(
   const rootNodes = roots
     .filter((position) => !isSystemBar(raw[position] as RawNode, viewport, () => displayOnly(position)))
     .map((position) => build(position, undefined));
-  return { roots: rootNodes, index, viewport };
+  return { roots: rootNodes, index, viewport, refsGeneration: options.refsGeneration };
 }
 
 /** Quotes one selector term value the way agent-device's parser reads it back. */

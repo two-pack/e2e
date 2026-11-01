@@ -17,8 +17,14 @@ import type { Browser, Dialog, RouteContinueOverrides, RouteFulfillResponse, Web
 
 declare const browser: Browser;
 void (browser.waitForDownload(async () => {}).then(file => file.absolutePath) satisfies Promise<string>);
+void (browser.unrouteAll() satisfies Promise<void>);
+// @ts-expect-error clearing routes takes no options
+void browser.unrouteAll({ behavior: 'ignoreErrors' });
 
 declare const route: WebRoute;
+void (route.fetch().then(response => response.text()) satisfies Promise<string>);
+// @ts-expect-error upstream fetch currently takes no overrides
+void route.fetch({ timeout: 100 });
 void route.continue();
 void route.fallback();
 // @ts-expect-error `abort` takes no Playwright error code.

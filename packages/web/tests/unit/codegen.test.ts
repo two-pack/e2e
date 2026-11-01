@@ -207,6 +207,26 @@ describe('playwright codegen statements', () => {
     expect(code).toContain('// NOTE: this step was not recorded whole');
   });
 
+  it('writes a drag between two points as mouse moves, each end inside its element when the recording kept one', () => {
+    const code = render(
+      actFile([
+        {
+          name: 'dragAt',
+          summary: 'draw',
+          viewport: { width: 1280, height: 720 },
+          from: { point: { x: 10, y: 20 } },
+          to: { point: { x: 300, y: 40 }, within: { target: { role: 'img', name: 'Canvas' }, fx: 0.5, fy: 0.25 } },
+        },
+      ]),
+    );
+    expect(code).toContain('// A bare point on the 1280x720 viewport the run used.\n    const from = { x: 10, y: 20 };');
+    expect(code).toContain('const toBox = await page.getByRole("img", { name: "Canvas", exact: true }).boundingBox();');
+    expect(code).toContain('const to = { x: toBox.x + toBox.width * 0.5, y: toBox.y + toBox.height * 0.25 };');
+    expect(code).toContain(
+      'await page.mouse.move(from.x, from.y);\n    await page.mouse.down();\n    await page.mouse.move(to.x, to.y, { steps: 10 });\n    await page.mouse.up();',
+    );
+  });
+
   it("writes a judgment's checks as the expects that prove it, a waitFor's retrying until its deadline", () => {
     const status = { role: 'status', name: 'Order' };
     const checks: CodegenCheck[] = [

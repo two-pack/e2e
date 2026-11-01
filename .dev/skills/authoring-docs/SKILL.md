@@ -121,8 +121,6 @@ Shortening adds claims. Check each new sentence:
 title: <noun the reader searches for>
 description: <one sentence: what the reader can do after this page>
 icon: <font awesome name, or /images/icons/<brand>.svg (see Page icons)>
-"og:image": <written by pnpm docs:og, never by hand>
-"twitter:image": <written by pnpm docs:og, never by hand>
 ---
 
 <lede: 2-4 sentences. What it is, what it does.>
@@ -180,8 +178,9 @@ placeholder:
 2. **Card logo**: `docs/images/integrations/<brand>.svg` in brand colors, on
    every `<Card>` that links to the page. An integration or CI page also
    gets a card on its overview, `docs/integrations/index.mdx` or
-   `docs/ci.mdx`. A near-black mark gets a `filter: invert(1)` rule for dark
-   mode in `docs/style.css`, like Expo's and TestMu AI's.
+   `docs/ci.mdx`. A near-black mark needs a `filter: invert(1)` rule for
+   dark mode in the site's styles, like Expo's and TestMu AI's; say so in
+   the PR.
 
 Take both from the vendor's own site or press kit, usually the favicon SVG
 for the mark. If you can't get a logo, stop and ask the user. Don't ship
@@ -189,8 +188,8 @@ the page without one. `scripts/check-docs-logos.ts` (in `pnpm docs:check`)
 fails on a vendor page with a missing icon, a Font Awesome icon, a card
 without a logo, or no overview card.
 
-Mintlify fills Font Awesome icons with one grey. A file loads as an `<img>`
-in its own colors. `docs/style.css` turns a file grey only when it is under
+The site fills Font Awesome icons with one grey. A file loads as an `<img>`
+in its own colors. The site turns a file grey only when it is under
 `docs/images/icons/`. It makes every opaque pixel a grey silhouette, so the
 file must be a silhouette too:
 
@@ -205,6 +204,10 @@ file must be a silhouette too:
   mark smaller than the icons beside it.
 - **Weight**: the icon shows at 16 px. Hairline strokes look faint at that
   size. Thicken them until the mark is as heavy as the icons beside it.
+
+The one exception is our own mark, `icons/testerarmy.png`: the TesterArmy
+favicon in grey shades, since its dithered pixel art turns to mush as a
+silhouette. The docs site skips the silhouette filter for it.
 
 Card logos in `docs/images/integrations/` are a different set. They keep
 their brand colors, and some sit on a filled tile. Don't use one as a page
@@ -272,6 +275,11 @@ Rules:
   `ShowMore`.
 - Don't nest tabs in tabs. An `Accordion` inside a `Tab` is fine.
 - Give a `ShowMore` a unique `id`.
+- Indent a bullet list inside an indented component at least as far as
+  the component's tags, as the `<Tab>` blocks in `docs/mobile.mdx` do. A
+  closing tag indented as far as the text after a `- ` marker joins the
+  last list item, even across a blank line, so the component never closes
+  and the page doesn't compile as MDX. `pnpm docs:check` fails on it.
 - About one screen of visible content between two headings. If more,
   fold it, cut it, or split the section.
 
@@ -413,7 +421,7 @@ at the top and finds its details one click down. Model pages:
 - The first `##` after the lede is always `## Reference`, on every page.
   Never Members, Methods, Entry points, or Overview there. Groups under it
   name what they hold: Queries, Options, Hooks, Commands.
-- Mintlify gives `##` to `####` an anchor and a line in "On this page".
+- The site gives `##` to `####` an anchor and a line in "On this page".
   `#####` gets neither. So entries are `###` on a one-group page and `####`
   on a page with several groups.
 - An entry's sub-part that lands at `#####` and is linked from anywhere gets
@@ -463,7 +471,6 @@ Each group opens with one table, one row per entry. Keep it to the minimum:
   entry, or you add it there.
 - Add no claim the old page or the source (`packages/*/src`) does not make.
   Check a default or a "Throws" condition in the source before you write it.
-- Leave `title` and `description` alone unless you also run `pnpm docs:og`.
 
 ## Before you commit
 
@@ -482,6 +489,9 @@ Each group opens with one table, one row per entry. Keep it to the minimum:
 - [ ] No section shows much more than one screen without folding.
 - [ ] Every shell block that runs `npx` or `npm install`/`ci` is a
       `CodeGroup` of npm, pnpm, bun.
+- [ ] A bullet list inside an indented component is indented at least as
+      far as its tags ([Showing less at one time](#showing-less-at-one-time)),
+      and `pnpm docs:check` passes: it compiles every page as standard MDX.
 - [ ] Code blocks are real or clearly fragments. A full example lives in
       `docs/examples/`, has an entry in `EXAMPLES` in
       `scripts/check-docs-examples.ts`, and typechecks with
@@ -492,11 +502,7 @@ Each group opens with one table, one row per entry. Keep it to the minimum:
       links to it ([Page icons](#page-icons)). A new integration or CI page
       has a card on its overview.
 - [ ] A page icon from a file is a black silhouette under
-      `docs/images/icons/` and matches its sidebar neighbors in light and
-      dark mode.
+      `docs/images/icons/` (except `testerarmy.png`, see "Page icons") and
+      matches its sidebar neighbors in light and dark mode.
 - [ ] Links and anchors resolve. Moved pages have redirects.
-- [ ] A new page, or a changed title or description, has a fresh social
-      card from `pnpm docs:og`. Look at `docs/images/og/<page>.png`.
 - [ ] `pnpm docs:check` passes.
-- [ ] Preview the page with `pnpm docs:dev` and look at it
-      the way a skimmer would: scroll fast, stop only at headings and code.

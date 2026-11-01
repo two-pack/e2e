@@ -101,7 +101,6 @@ export interface CodegenChecksRequest {
 
 /** Why a judgment's screen has no screenshot, in a phrase for the code and the report. */
 const SCREENSHOT_WITHHELD = {
-  tainted: 'a secret was filled earlier in this attempt, so no screenshot leaves it',
   declined: 'the call asked for no screenshot',
   failed: 'the engine took no screenshot',
 } as const;
@@ -110,20 +109,17 @@ const SCREENSHOT_WITHHELD = {
  * Where an `agent.assert` step's own evidence screenshot is, for the
  * judgment's gap: the file it saved, or why there is none.
  */
-export function evidenceScreenshot(runtime: AgentContext, requested: boolean | undefined, relative: string | undefined): CodegenScreenshot {
+export function evidenceScreenshot(requested: boolean | undefined, relative: string | undefined, artifactsDir: string): CodegenScreenshot {
   if (requested === false) return { withheld: SCREENSHOT_WITHHELD.declined };
-  if (runtime.exposure.withholdsPixels) return { withheld: SCREENSHOT_WITHHELD.tainted };
-  return relative === undefined ? { withheld: SCREENSHOT_WITHHELD.failed } : { file: path.join(runtime.artifacts.dir, relative) };
+  return relative === undefined ? { withheld: SCREENSHOT_WITHHELD.failed } : { file: path.join(artifactsDir, relative) };
 }
 
 /**
  * Takes a screenshot of the screen a judgment with a gap passed on, for a
  * step that took none of its own (`agent.waitFor`, `agent.extract`, a custom
- * executor's assertion): redacted by the engine, attached to the step, and
- * never once a secret was filled.
+ * executor's assertion): redacted by the engine and attached to the step.
  */
 async function screenshotForGap(runtime: AgentContext): Promise<CodegenScreenshot> {
-  if (runtime.exposure.withholdsPixels) return { withheld: SCREENSHOT_WITHHELD.tainted };
   try {
     const relative = await runtime.engine.session.artifacts.screenshot('judgment', runtime.engine.operation());
     runtime.steps.attachArtifact(runtime.artifacts.register('screenshot', relative));

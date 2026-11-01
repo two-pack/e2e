@@ -19,12 +19,13 @@ import { sameRoute } from '../cache/route.ts';
 import { keyContextChanges, type CacheAgentIdentity } from '../cache/identity.ts';
 import { recordedProvenance, TraceRecorder } from '../cache/recorder.ts';
 import { expandTrace, templateParams, templatesCollide, templateTrace, type ParamTemplate } from '../cache/template.ts';
-import { readTraceEntry, targetLabel, type ActionTrace, type DerivedReason, type RecordedModel, type TraceEntry, type TraceTargetDescriptor } from '../cache/trace.ts';
+import { targetLabel, type ActionTrace, type DerivedReason, type RecordedModel, type TraceEntry, type TraceTargetDescriptor } from '../cache/trace.ts';
+import { readTraceEntry } from '../cache/trace-read.ts';
 import { sleep } from '../internal/time.ts';
 import type { StepCacheInfo } from '../run/steps.ts';
 import type { JsonValue } from '../types.ts';
 import type { RecordableAction } from './actions.ts';
-import { AgentError, isAgentError, isModelUnreachable } from './error.ts';
+import { ActionHookError, AgentError, isAgentError, isModelUnreachable } from './error.ts';
 import { isRuntimeHardStop, type ReplayedPrefix, type StepVerdict } from './executor.ts';
 import {
   replayTrace,
@@ -80,7 +81,7 @@ export type StepOutcome = 'passed' | 'failed' | 'no-verdict';
 
 /** The outcome of a step that threw `cause`. */
 export function failedStepOutcome(cause: unknown): Exclude<StepOutcome, 'passed'> {
-  if (isModelUnreachable(cause)) return 'no-verdict';
+  if (isModelUnreachable(cause) || cause instanceof ActionHookError) return 'no-verdict';
   return isAgentError(cause) && cause.code === 'CANCELLED' ? 'no-verdict' : 'failed';
 }
 
@@ -527,9 +528,9 @@ export class StepTraceSession {
       const observation = await probeScreen(this.host, 'raw');
       if (observation?.kind !== 'semantic' || !this.host.traceEligible) return undefined;
       if (recorded === undefined || observation.path === undefined || sameRoute(recorded, observation.path)) return observation;
-      const delay = END_PATH_DELAYS_MS[attempt];
+      // The last delay repeats until the timeout, as in `pollSettled`.
+      const delay = END_PATH_DELAYS_MS[attempt] ?? END_PATH_DELAYS_MS[END_PATH_DELAYS_MS.length - 1]!;
       if (
-        delay === undefined ||
         Date.now() - startedMs + delay > END_PATH_TIMEOUT_MS ||
         this.host.remainingMs() <= delay ||
         this.host.signal.aborted
@@ -653,8 +654,8 @@ export class StepTraceSession {
    */
   private async evict(): Promise<void> {
     if (this.cache.store.delete === undefined) return;
-    this.cache.staged.push({ kind: 'decided', outcome: 'evicted', keyHash: this.keyHash, stepIndex: this.options.stepIndex });
-    await this.cache.store.delete(this.keyHash).catch(() => undefined);
+    const deleted = await this.cache.store.delete(this.keyHash).then(() => true, () => false);
+    if (deleted) this.cache.staged.push({ kind: 'decided', outcome: 'evicted', keyHash: this.keyHash, stepIndex: this.options.stepIndex });
   }
 
   private repairedAfterEndMismatch(recorder: TraceRecorder): boolean {

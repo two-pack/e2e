@@ -49,6 +49,11 @@ function oxc(): { transform: typeof OxcTransform; parser: typeof OxcParser } {
   return compiler;
 }
 
+/** oxc's parser, loaded on first use as the compiler is; `e2e mcp`'s `run_code` reads its statements with it. */
+export function oxcParser(): typeof OxcParser {
+  return oxc().parser;
+}
+
 /** The first ECMAScript edition that defines class fields rather than assigning them. */
 const DEFINED_FIELDS_SINCE = 2022;
 
@@ -117,7 +122,7 @@ function position(text: string): string {
 }
 
 /**
- * Syntax oxc 0.153 passes through unchanged that Node.js cannot run, found
+ * Syntax oxc 0.154 passes through unchanged that Node.js cannot run, found
  * before compiling so the error names the line and the fix instead of a
  * bare `SyntaxError` from Node.js with no location. Each check only parses
  * a file whose text could hold the construct.
@@ -178,7 +183,7 @@ const HOOKED_REQUIRE = `require = globalThis[Symbol.for(${JSON.stringify(HOOKED_
  * - Oxc keeps a file whose only imports were type-only a module by printing
  *   `export {};`, even for CommonJS, where that statement is a syntax error
  *   and TypeScript emits nothing. It is an oxc bug, not yet reported
- *   upstream (oxc 0.153.0, `crates/oxc_transformer/src/typescript/
+ *   upstream (oxc 0.154.0, `crates/oxc_transformer/src/typescript/
  *   annotations.rs`, the `no_modules_remaining && some_modules_deleted`
  *   branch). The statement is blanked out, so nothing after it moves.
  * - `HOOKED_REQUIRE` follows the last directive on
@@ -210,7 +215,7 @@ const helperFiles = new Map<string, string>();
 
 /**
  * The compiled code with each runtime helper it imports or requires taken
- * from e2e's own copy: by URL for `import`, by path for `require`. Oxc 0.153
+ * from e2e's own copy: by URL for `import`, by path for `require`. Oxc 0.154
  * has no option to name the helper source, so the import and require
  * specifiers it printed (`helpersUsed`) are rewritten; a redirect of the
  * package name in the resolver would also catch a project's own

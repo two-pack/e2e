@@ -7,8 +7,8 @@ icon: "display"
 ---
 
 The `screen` fixture builds locators. A `Locator` stores a query and resolves
-it when an action, read, or assertion runs. `Locator` extends `Screen`, so
-every query also runs on a locator, scoped to its subtree.
+it when an action, read, or assertion runs. Every query also runs on a
+locator, scoped to its subtree.
 
 ```ts title="tests/invoices.e2e.ts"
 import { expect, test } from 'e2e';
@@ -84,7 +84,9 @@ makes, so an `aria-hidden` node that still paints counts as visible. See
 `getByRole('img', { name })` builds the same query as
 `getByRole('image', { name })`, so a test ported from Playwright keeps its
 spelling. On the web, `image` covers `<img>` with alt text and any element
-with `role="img"`. An `<img alt="">` is decoration and matches nothing.
+with `role="img"`. An `<img alt="">` is decoration and matches nothing,
+unless it has a `title`, a `tabindex`, or a global ARIA attribute: then it is
+an `image`.
 
 ##### Roles on the web
 
@@ -110,6 +112,9 @@ The web engine derives the roles from HTML the way HTML-AAM does:
 - `<form>` and `<section>` are `form` and `region` only when they carry an
   `aria-label`, `aria-labelledby`, or `title`.
 - `<menu>` is a `list`; only `role="menu"` is a `menu`.
+- `role="presentation"` and `role="none"` are ignored on a focusable element
+  or one with a global ARIA attribute such as `aria-label`, as `getByRole`
+  reads them: `<button role="none">` is still a `button`.
 
 Names follow the same rules:
 
@@ -276,6 +281,7 @@ Prefer it over `browser.locator('p:visible')`, which ties the test to CSS.
 | Method | Returns |
 | --- | --- |
 | [`filter`](#filter) | `Locator` |
+| [`or`](#or) | `Locator` |
 | [`first`](#first) | `Locator` |
 | [`last`](#last) | `Locator` |
 | [`nth`](#nth) | `Locator` |
@@ -286,24 +292,46 @@ Refinement returns a new locator without querying the app.
 
 ```ts
 /** Adds deterministic locator filters. */
-filter(options: { hasText?: TextMatch; has?: Locator }): Locator;
+filter(options: { hasText?: TextMatch; hasNotText?: TextMatch; has?: Locator; hasNot?: Locator }): Locator;
 ```
 
 ```ts
-const row = screen.getByRole('listitem').filter({ hasText: 'Invoice 42' });
+const row = screen.getByRole('listitem').filter({ hasText: 'Invoice 42', hasNotText: 'Paid' });
 await row.getByRole('button', 'Void').tap();
 ```
 
 - `hasText` with a string is a case-insensitive substring match over the
   match and its descendants, unlike a query text, which matches exactly. Pass
   a `RegExp` for anything stricter.
+- `hasNotText` excludes matches with that subtree text, using the same
+  substring or `RegExp` rules.
 - `has` keeps a match whose subtree resolves the inner locator.
+- `hasNot` drops a match whose subtree resolves the inner locator. It follows
+  the same scoping rules as `has`.
 
 | Throws | When |
 | --- | --- |
-| `INVALID_LOCATOR` | Neither `hasText` nor `has` is given. |
-| `INVALID_LOCATOR` | Any other key, even beside them: `hasNot`, `hasNotText`, and `visible` are not filters here. |
-| `INVALID_LOCATOR` | `has` is not a runner locator, or was made by another target's screen. |
+| `INVALID_LOCATOR` | None of `hasText`, `hasNotText`, `has`, or `hasNot` is given. |
+| `INVALID_LOCATOR` | Any other key, even beside them: `visible` is not a filter here. |
+| `INVALID_LOCATOR` | `has` or `hasNot` is not a runner locator, or was made by another target's screen. |
+
+#### `or`
+
+```ts
+/** Matches either locator, preserving document order without duplicate nodes. */
+or(other: Locator): Locator;
+```
+
+`a.or(b)` matches either branch once, in document order. It stays strict:
+when both match different nodes, an action throws `LOCATOR_AMBIGUOUS`.
+Add `first()` if either will do. Both locators must come from the same
+screen and attempt. On web, both need identical literal frame-selector
+chains; display-value branches cannot be composed.
+
+| Throws | When |
+| --- | --- |
+| `INVALID_LOCATOR` | `other` is not a runner locator, or belongs to another screen or attempt. |
+| `UNSUPPORTED_CAPABILITY` | Web branches have different frame-selector chains, or a branch is a display-value query. |
 
 #### `first`
 
@@ -463,6 +491,59 @@ await screen.getByTestId('feed').scrollUntilVisible(row);
 | `INVALID_LOCATOR` | `target` is not a runner locator, or was made by another target's screen. |
 | `INVALID_ARGUMENT` | An option it does not take. |
 | `LOCATOR_NOT_FOUND` | The deadline expires first, a swipe it cut short included. |
+
+### Screen reads
+
+| Method | Returns |
+| --- | --- |
+| [`screen.tree`](#screen-tree) | `Promise<string>` |
+| [`screen.debug`](#screen-debug) | `Promise<void>` |
+
+Both read the whole screen once, without waiting, and work on every engine.
+They run as a step. A locator does not have them, and a frame throws
+`INVALID_ARGUMENT`.
+
+#### `screen.tree`
+
+Returns the screen as the agent reads it. Use it to write a locator.
+
+```ts
+/**
+ * Reads the whole screen once, without waiting, as the agent reads it: one
+ * node per line, `#id role "name" text="…" [states]`, children indented,
+ * secrets redacted.
+ */
+tree(options?: ActionOptions): Promise<string>;
+```
+
+```text
+#n29 textbox "New todo"
+#n30 button "Add"
+ #n35 listitem "Milk Delete Milk" testid="todo"
+  #n36 checkbox "Milk" [checked]
+```
+
+- Uses `config.actionTimeout`.
+- The text has the same format and size limit as the trace's
+  [screen at failure](/debugging#traces).
+
+| Throws | When |
+| --- | --- |
+| `INVALID_ARGUMENT` | Called on a frame, or with an option it does not take. |
+
+#### `screen.debug`
+
+Prints [`screen.tree()`](#screen-tree) to the test's
+[console output](/debugging#console-output).
+
+```ts
+/** Prints `tree()` to the test's output. */
+debug(options?: ActionOptions): Promise<void>;
+```
+
+```ts
+await screen.debug();
+```
 
 ### Locator actions
 
@@ -733,7 +814,7 @@ await screen.getByRole('button', 'Account').hover();
 #### `setInputFiles`
 
 ```ts
-/** Sets the files of exactly one file input; paths resolve from the project root. */
+/** Sets the files of exactly one file input, or of a control that opens a file chooser; paths resolve from the project root. */
 setInputFiles(paths: string | readonly string[], options?: ActionOptions): Promise<void>;
 ```
 
@@ -741,9 +822,12 @@ setInputFiles(paths: string | readonly string[], options?: ActionOptions): Promi
 await screen.getByLabel('Receipt').setInputFiles('fixtures/receipt.pdf');
 ```
 
+On the web it also takes a button that opens a file chooser.
+
 | Throws | When |
 | --- | --- |
 | `INVALID_ARGUMENT` | An empty list or a blank entry. |
+| `ACTION_FAILED` | On the web, a button that opens no file chooser. |
 
 #### `dragTo`
 
@@ -948,7 +1032,8 @@ boundingBox(): Promise<{ x: number; y: number; width: number; height: number } |
 const map = (await screen.getByRole('image', 'Map').boundingBox())!;
 ```
 
-The box is in CSS pixels. It is `null` for a node that lays out no box
+The box is in CSS pixels, and on a device in points (physical pixels on
+Android). It is `null` for a node that lays out no box
 (`display: none` on it or an ancestor). A `visibility: hidden` node keeps
 its box.
 

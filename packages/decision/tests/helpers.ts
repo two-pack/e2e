@@ -127,7 +127,6 @@ export function context(options: {
   params?: Readonly<Record<string, JsonValue>>;
   secrets?: StepExecutorContext['step']['secrets'];
   vision?: StepExecutorContext['step']['vision'];
-  pixelsTainted?: boolean;
 } = {}) {
   const signal = options.signal ?? new AbortController().signal;
   const noop = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
@@ -146,6 +145,7 @@ export function context(options: {
     typeText: noop, pressKey: noop, dismissKeyboard: noop,
     tapAt: vi.fn<ExecutorActions['tapAt']>().mockImplementation(async (point) => ({ point, summary: 'tap' })),
     hoverAt: vi.fn<ExecutorActions['hoverAt']>().mockImplementation(async (point) => ({ point, summary: 'hover' })),
+    dragAt: vi.fn<ExecutorActions['dragAt']>().mockImplementation(async (from, to) => ({ from, to, summary: 'drag' })),
     hitTest: vi.fn<ExecutorActions['hitTest']>().mockImplementation(async (point) => ({ point, summary: 'hit' })),
   };
   const tree = options.tree ?? { id: 'root', children: [{ id: 'name', role: 'textbox', name: 'Name', value: '' }] };
@@ -159,11 +159,11 @@ export function context(options: {
   const transcripts: string[] = [];
   const ctx: StepExecutorContext = {
     step: { kind: options.kind ?? 'act', index: 0, instruction: 'Do the thing', params: options.params, secrets: options.secrets ?? [{ name: 'password', purpose: 'password' }], ...(options.vision === undefined ? {} : { vision: options.vision }) },
-    attempt: { testId: 'test', attemptId: 'attempt', index: 0, signal, memory: new Map() },
+    attempt: { testId: 'test', attemptId: 'attempt', titlePath: [], index: 0, signal, memory: new Map() },
     signal, target: { name: 'web', platform: 'web', verbs: new Set(options.verbs ?? (Object.keys(actions) as (keyof ExecutorActions)[])), tapModifiers: false },
     model: options.model as StepExecutorContext['model'], providerOptions: undefined,
     ledger: options.ledger ?? '', agentContext: undefined,
-    actions, observe, pixelsTainted: options.pixelsTainted ?? false,
+    actions, observe,
     attachTranscript: (text) => { transcripts.push(text); }, attachTurns: (seen) => { turns.push(...seen); }, attachScreenshot: async () => 'screenshot',
     budgets: { maxActions: 25, maxModelCalls: options.maxModelCalls ?? 25, remainingMs: () => 60000, actionsUsed: () => 0, recordModelCall: (call) => { usage.push(call ?? {}); }, runTool: (_call, body) => body() },
     ...(options.replayedPrefix === undefined ? {} : { replayedPrefix: options.replayedPrefix }),

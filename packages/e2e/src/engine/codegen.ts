@@ -113,7 +113,7 @@ export interface CodegenJudgmentGap {
    * artifacts: a later run may clear it.
    */
   readonly screenshot?: string;
-  /** Why there is no `screenshot`, in a phrase: `a secret was filled earlier in this attempt, …`. */
+  /** Why there is no `screenshot`, in a phrase: `the call asked for no screenshot`. */
   readonly screenshotWithheld?: string;
 }
 

@@ -71,7 +71,7 @@ export function asActionable(target: ActionTarget): Actionable {
 }
 
 /** Owning page of one action target. */
-async function targetPage(target: ActionTarget): Promise<Page> {
+export async function targetPage(target: ActionTarget): Promise<Page> {
   if (target.kind === 'locator') return target.locator.page();
   const frame = await target.element.ownerFrame();
   if (frame === null) throw invalidState('element is detached from every frame');
@@ -366,7 +366,7 @@ export function isNavigationRace(cause: unknown): boolean {
  * be captured in time is not a race.
  */
 export function navigationStaleOr(cause: unknown, operation: string): Error {
-  if (!isClassified(cause) && isNavigationRace(cause)) {
+  if (!isClassified(cause) && !isPwTimeout(cause) && isNavigationRace(cause)) {
     return new EngineError('NODE_STALE', `${operation}: ${message(cause)}`, {
       retryable: true,
       cause,
@@ -381,7 +381,7 @@ export function navigationStaleOr(cause: unknown, operation: string): Error {
  * waits, so a `TimeoutError` there is a budget that ran out, not a miss.
  */
 export function staleOr(cause: unknown, operation: string): Error {
-  if (isClassified(cause)) return cause;
+  if (isClassified(cause) || isPwTimeout(cause)) return translatePwError(cause, operation);
   const text = message(cause);
   if (STALE_PATTERN.test(text) || isNavigationRace(cause)) {
     return new EngineError('NODE_STALE', `${operation}: ${text}`, { retryable: true, cause });

@@ -238,6 +238,20 @@ test('shows the offline banner', { platforms: ['android'] }, async ({ app, devic
 `app.clearState()` leaves alone, so a stored session token is gone on the
 next launch. It is iOS only.
 
+For anything `device` doesn't cover, `device.unstable_raw` has an
+[agent-device](https://github.com/callstack/agent-device) client
+bound to the test's session, plus the session name and the device's id and
+name. It is unstable and may change or go away in any release:
+
+```ts
+const { client, deviceId } = device.unstable_raw;
+const { nodes } = await client.capture.snapshot({});
+```
+
+Client calls aren't steps: the report and trace leave them out, the agent
+cache doesn't replay them, secrets passed to them aren't redacted, and
+nothing waits for the screen to settle after one.
+
 <Accordion title="Foldable simulators and emulators">
 `device.fold(pose)` puts the iPhone Duo simulator or a foldable Android
 emulator (a Pixel Fold profile, or the generic "7.6in Foldable") in a hinge
@@ -268,6 +282,26 @@ test('the list and the detail split across the fold', async ({ agent, app, devic
 });
 ```
 </Accordion>
+
+### Record a transition
+
+[`app.startRecording()` and `app.stopRecording()`](/reference/app#startrecording)
+record one span of the screen as an `.mp4`. A locator's `boundingBox()`
+gives an element's frame in points (physical pixels on Android).
+
+```ts
+test('the sheet slides up', { video: 'off' }, async ({ app, screen }) => {
+  await app.open();
+  await app.startRecording({ name: 'sheet' });
+  await screen.getByRole('button', 'Open sheet').tap();
+  await expect(screen.getByText('Sheet title')).toBeVisible();
+  const [video] = await app.stopRecording();
+});
+```
+
+Start it after `app.open()`. A recording started after `device.closeApp()`
+ends the device session when it stops, so open the app again after it.
+Taps show unless [`videoTouches`](/reference/mobile#videotouches) is `false`.
 
 ## Several devices
 
@@ -427,7 +461,8 @@ run starts, and releases it when the run ends.
 
 For [EAS Simulators](/integrations/eas), use `easSimulators()` from
 `@e2e-dev/eas`. For [TestMu AI](/integrations/testmu), use `testmu()` from
-`@e2e-dev/testmu`. For another service, write a provider of a few dozen lines,
+`@e2e-dev/testmu`. For [BrowserStack](/integrations/browserstack), use
+`browserstack()` from `@e2e-dev/browserstack`. For another service, write a provider of a few dozen lines,
 such as `hostedDevices` in the example below:
 
 ```ts
@@ -567,56 +602,39 @@ export function hostedDevices(options: { serviceUrl: string; image: string }): D
 
 <Accordion title="Example: a device cloud that agent-device supports">
 A device cloud that agent-device itself speaks to needs no session API of
-your own. The provider allocates a lease through a daemon it starts for the
-run, and gives the worker the lease scope as `client`. `testmu()` from
-`@e2e-dev/testmu` works this way for [TestMu AI](/integrations/testmu).
+your own. `agentDeviceLeases()` from `@e2e-dev/mobile/lease` starts an
+agent-device daemon per worker slot with the credentials in `env`, allocates
+a lease with the `selectors`, keeps it alive while the run holds it, and on
+release fails unless agent-device confirms the session ended. `testmu()`
+from `@e2e-dev/testmu` works this way for [TestMu AI](/integrations/testmu),
+and `browserstack()` from `@e2e-dev/browserstack` for
+[BrowserStack](/integrations/browserstack).
 
 ```ts title="device-cloud-provider.ts" expandable
-import { createAgentDeviceClient } from 'agent-device';
 import type { DeviceProvider } from '@e2e-dev/mobile';
+import { agentDeviceLeases } from '@e2e-dev/mobile/lease';
 
 /**
- * Leases devices from a device cloud agent-device itself speaks to, through
- * a daemon started for the run. The daemon's runtime for the cloud creates
- * the instance when the lease is allocated and deletes it when the lease is
- * released; the worker's client carries the lease, so every command lands on
- * that instance. `provider` is agent-device's name for the cloud; its runtime
- * reads the credentials from the environment the daemon starts with.
+ * Leases devices from a device cloud agent-device itself speaks to. Each
+ * worker slot gets its own agent-device daemon, whose runtime for the cloud
+ * starts the session when the lease is allocated and ends it on release.
+ * `provider` is agent-device's name for the cloud.
  */
-export function cloudDevices(options: { provider: string; stateDir: string }): DeviceProvider {
-  const scopes = new Map<string, { tenant: string; runId: string; leaseId: string; leaseBackend: 'ios-instance' | 'android-instance'; leaseProvider: string }>();
+export function cloudDevices(options: { provider: string; device: string; osVersion: string; app: string }): DeviceProvider {
+  const leases = agentDeviceLeases({ provider: options.provider, label: options.provider });
   return {
     name: options.provider,
     async acquire(request) {
-      // One daemon per run, under a directory of its own.
-      const stateDir = `${options.stateDir}/${request.runId}`;
-      const client = createAgentDeviceClient({ stateDir, session: `lease-${request.slot}` });
-      const leaseBackend = request.platform === 'ios' ? ('ios-instance' as const) : ('android-instance' as const);
-      const lease = await client.leases.allocate({
-        tenant: options.provider,
-        runId: request.runId,
-        leaseBackend,
-        leaseProvider: options.provider,
-        retainOnClose: true,
-        platform: request.platform,
-        target: 'mobile',
+      const token = request.env['CLOUD_TOKEN'];
+      if (token === undefined || token === '') throw new Error('CLOUD_TOKEN is not set');
+      return leases.acquire(request, {
+        // The daemon's runtime reads the credentials from its environment.
+        env: { CLOUD_TOKEN: token },
+        selectors: { device: options.device, providerOsVersion: options.osVersion, providerApp: options.app },
+        summary: `${options.device}, ${request.platform} ${options.osVersion}`,
       });
-      const scope = { tenant: lease.tenantId, runId: lease.runId, leaseId: lease.leaseId, leaseBackend, leaseProvider: options.provider };
-      if (lease.retainOnClose !== true) {
-        await client.leases.release(scope);
-        throw new Error(`Device cloud did not grant retainOnClose for lease ${lease.leaseId}`);
-      }
-      request.log(`leased ${lease.leaseId}`);
-      scopes.set(lease.leaseId, scope);
-      // The worker's client is created with these fields; the daemon resolves the device from them.
-      return { id: lease.leaseId, client: { stateDir, ...scope } };
     },
-    async release(lease) {
-      const scope = scopes.get(lease.id);
-      if (scope === undefined) return;
-      const client = createAgentDeviceClient({ stateDir: `${options.stateDir}/${scope.runId}`, session: 'release' });
-      await client.leases.release(scope);
-    },
+    release: (lease, context) => leases.release(lease, context),
   };
 }
 ```
@@ -639,9 +657,10 @@ export function cloudDevices(options: { provider: string; stateDir: string }): D
   Query it by test id or label and assert `toBeSelected`. Checkboxes,
   radios, and `toBeChecked` work on both platforms.
 - On iOS, a plain React Native `View` has no children in the tree, so
-  `filter({ has })` on it and queries scoped to it match nothing. Scope to
-  the screen's `ScrollView` (`device.locator('role=scroll-area')`), or give
-  the children test ids.
+  `filter({ has })` on it and queries scoped to it match nothing, while
+  `filter({ hasNot })` keeps every such row, including one you meant to
+  exclude. Scope to the screen's `ScrollView`
+  (`device.locator('role=scroll-area')`), or give the children test ids.
 - A Jetpack Compose clickable drawn smaller than 48dp shows as two buttons
   in the tree, and a tap fails with `has no parent-owned touch point`. Make
   the control at least 48dp, Android's minimum touch target.
@@ -675,14 +694,18 @@ the Android SDK's `aapt`, found under `ANDROID_SDK_ROOT`, `ANDROID_HOME`,
 `app.bundleId`. Or export `ANDROID_HOME`, then stop the agent-device daemon
 so the next run starts it with the variable.
 
-**Android reports insufficient foreground app content.** agent-device
-couldn't read the screen yet, often an app still loading after a cold
-start. A waiting locator action or `expect` waits through it, as for an
-element not there yet. If the screen is still unreadable when the wait runs
-out, the step fails with this message. Immediate reads like `count()` and
-`isVisible()` see no matches instead, so `not.toBeVisible()` can pass while
-the screen is unreadable. An observation, such as the agent's next turn,
-fails on it at once.
+**Android reports insufficient foreground app content, or iOS reports the
+app is not running.** agent-device couldn't read the screen yet, often an
+app still loading after a cold start. On iOS this only counts until the
+first readable screen after `app.open()`, `app.restart()`, or
+`device.openLink()`, as on a physical iPhone that is still launching the
+app; an app that exits later fails at once. A waiting locator action or
+`expect` waits through it, as for an element not there yet. If the screen
+is still unreadable when the wait runs out, the step fails with this
+message. Immediate reads like `count()` and `isVisible()` see no matches
+instead, so `not.toBeVisible()` can pass while the screen is unreadable,
+including on an app that crashed before it rendered. An observation, such
+as the agent's next turn, fails on it at once.
 
 **A timeout on the device.** A simulator boot, runner connection, or app
 launch that times out on the device is `ENGINE_FAILURE` with agent-device's
@@ -693,8 +716,14 @@ message and hint, never `LAUNCH_TIMEOUT`, `ACTION_FAILED`, or
 `back` gets its `timeout` (default `actionTimeout`). If the device doesn't
 answer in time, the step fails with `ACTION_FAILED` and isn't retried: the
 input may have landed. A `longPress` that holds at least as long as the
-time left is refused before it's sent; raise its `timeout`. Finding the
-element isn't cut off, so a missing one still fails as `LOCATOR_NOT_FOUND`.
+time left is refused before it's sent; raise its `timeout`. Snapshots and
+screenshots run within the timeout of the call that takes them, so a device
+that stops answering fails the step with `ACTION_FAILED` instead of holding
+it until the test timeout. `locator.waitFor`, `expect`, and
+`toHaveScreenshot` give their last snapshot extra time, up to their slowest
+one so far and within the test timeout, so a screen that shows up during it
+still passes. An element that never shows up fails as
+`LOCATOR_NOT_FOUND`, or `ASSERTION_FAILED` for `expect`.
 
 <CodeGroup>
 ```bash npm

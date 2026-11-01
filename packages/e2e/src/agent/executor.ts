@@ -67,6 +67,11 @@ export interface ExecutorStep {
 export interface ExecutorAttempt {
   readonly testId: string;
   readonly attemptId: string;
+  /**
+   * The test's title path, outermost `describe` first, redacted; empty
+   * outside `e2e run` (an `openHost` session, `e2e mcp`).
+   */
+  readonly titlePath: readonly string[];
   /** Zero-based retry index of this attempt. */
   readonly index: number;
   /**
@@ -89,10 +94,10 @@ export interface ExecutorObserveOptions {
   readonly tree?: boolean;
   /**
    * Include masked viewport pixels as `pixels`. Granted only when the engine
-   * captures pixels, its masking is proven, and no secret has been filled in
-   * this attempt; otherwise `pixelsWithheld` names the reason. Normally off
-   * unless asked. If semantic capture fails, the observation carries its
-   * permitted screenshot because no semantic evidence is available.
+   * captures pixels and its masking is proven; otherwise `pixelsWithheld`
+   * names the reason. Normally off unless asked. If semantic capture fails,
+   * the observation carries its screenshot when masking is proven, because
+   * no semantic evidence is available.
    */
   readonly pixels?: boolean;
 }
@@ -241,20 +246,30 @@ export interface ExecutorActions {
   /**
    * Taps one viewport point, in the CSS pixels of the newest observation
    * (`SemanticNode.rect` space; a point read off `pixels` is divided by its
-   * `scale`). The point is routed onto the tree: a listed, enabled control
-   * whose box contains it is tapped by its id, exactly like `tap`, with a
-   * replayable descriptor; a point on nothing listed goes to the engine as a
-   * bare point when it has the `pointer` capability, recorded with its
-   * viewport. Fails when the point is on nothing listed and the engine taps
-   * nodes only.
+   * `scale`). The engine gets the bare point when it has the `pointer`
+   * capability, recorded with its viewport and its place inside the node
+   * under it. An engine that taps nodes only gets the listed, enabled
+   * control whose box contains the point, tapped by its id like `tap`, and
+   * fails when the point is on nothing listed.
    */
   tapAt(point: ViewportPoint): Promise<PointTapResult>;
   /**
-   * Hovers one viewport point, routed onto the tree the way `tapAt` is: a
-   * listed control under it is hovered by id, a bare point through the
-   * engine's `hover` pointer kind (`hoverAt` in `target.verbs`).
+   * Hovers one viewport point the way `tapAt` taps one: the bare point
+   * through the engine's `hover` pointer kind (`hoverAt` in `target.verbs`),
+   * else the listed control under it by id.
    */
   hoverAt(point: ViewportPoint): Promise<PointTapResult>;
+  /**
+   * Drags from one viewport point to another, in the CSS pixels `tapAt`
+   * takes, for a drag the tree does not list: a shape on a canvas, a pin on
+   * a map, a card dropped on an empty spot. The engine gets the bare points
+   * through its `dragTo` pointer kind (`dragAt` in `target.verbs`), recorded
+   * with the viewport and each point's place inside the node under it. An
+   * engine that drags nodes only gets the two different listed, enabled
+   * controls holding the ends, dragged by id like `drag`, and fails when the
+   * points do not land on two such controls.
+   */
+  dragAt(from: ViewportPoint, to: ViewportPoint): Promise<PointDragResult>;
   /**
    * Types into whatever holds focus, with no node resolved: the path for a
    * field the tree does not list (drawn on a canvas, flattened out of a
@@ -296,9 +311,23 @@ export interface PointHit {
 export interface PointTapResult {
   /** Where the action landed, in the newest observation's CSS pixels. */
   readonly point: ViewportPoint;
-  /** The listed control the point resolved to; absent when a bare point was acted on. */
+  /** The listed, enabled control containing the point, acted on by id or at the point; absent when none is listed there. */
   readonly target?: ExecutorTarget;
   /** Prose for a model: what was acted on, or what sits under a bare point. */
+  readonly summary: string;
+}
+
+/** What one `dragAt` did, for the executor to relay to its model. */
+export interface PointDragResult {
+  /** Where the drag started, in the newest observation's CSS pixels. */
+  readonly from: ViewportPoint;
+  /** Where the drag ended, in the same pixels. */
+  readonly to: ViewportPoint;
+  /** The listed, enabled control holding the start, dragged by id or at the point; absent when none is listed there. */
+  readonly source?: ExecutorTarget;
+  /** The listed, enabled control holding the end, the same way. */
+  readonly destination?: ExecutorTarget;
+  /** Prose for a model: what was dragged where, or what sits under the bare points. */
   readonly summary: string;
 }
 
@@ -447,14 +476,6 @@ export interface StepExecutorContext {
    */
   observe(options?: ExecutorObserveOptions): Promise<ExecutorObservation>;
   readonly actions: ExecutorActions;
-  /**
-   * True once a secret was filled in this attempt: `observe({ pixels: true })`
-   * withholds pixels for the rest of it. A secret an engine option holds
-   * (basic-auth credentials) is redacted from text only and taints nothing. An executor reads it when assembling
-   * its vocabulary, to leave screenshot verbs out rather than offer tools
-   * that can only decline.
-   */
-  readonly pixelsTainted: boolean;
   /**
    * Attaches the executor's model transcript to the step. Persisted as a
    * `log` artifact when the run collects debug detail (`--debug`); a no-op
